@@ -1,0 +1,238 @@
+Exercise 2.
+Dakle prva instrukcija nakon ljmp instrukcije (koja efektivno prebacuje izvršavanje 
+na novu adresu) je cmpw $0x28, %cs:(%esi), word, jasno zato što smo u REAL mode-u
+registar %esi je na vrijednosti 0, dakle offset je nula pa se porede vrijednosti 0x28 i vrijednost iz %cs*16
+u %cs je vrijednost 61440 sto je 0xF000 množenjem sa 16, dodajemo samo još jednu nulu i dobijamo 0xF0000.
+Sa te adrese se čita vrijednost - 2 bajta odnosno 16-bita vrijednosti i poredi to sa brojem 0x28 
+Ova instrukcija mijenja stanje flagova, ali ne ničega drugog. Popratni efekt ove operacije mi je trenutno malo nejasan,
+ali vjerovatno se sa te adrese čita vrijednost kako bi se ustanovilo da li je BIOS u tom trenutku na pravom mjestu
+Sledeća instrukcija je jne 0x241d0ad, što nam daje do znanja da će se na ovu adresu jumpati odnosno neće, u zavisnosti od 
+rezultata instrukcije iznad. Detaljnije rečeno, CPU će skočiti na ovu adresu ako prethodno izvršeni cmpw nije vratio jednakost tj. ako je ZF = 0 (zeroflag)
+Na ovu se adresu ide ako nešto nije krenulo po planu pri bootu OS-a, najbolje rečeno
+Sledeća instrukcija je xor %edx,%edx. Setuje registar %edx na nulu, jer će ga BIOS koristiti u budućnosti.
+Sledeća instrukcija je mov %edx, %ss
+Ovom instrukcijom se segmentni registar %ss postavlja na nulu
+Sledećom instrukcijom, mov $0x7000, %sp
+Znači da će u %sp (%sp se koristi jer smo u 16 bitnom modu) postaviti stack pointer na adresu 0x7000
+U suštini vidimo da BIOS radi neke provjere inicijalizuje segmentni registar i stack pointer, dakle neka priprema za dalji tok procesa boota
+Da napomenemo da je je jedan od glavnih zadataka BIOS-a da prije svega nađe program koji se zove bootloader, učita ga i počne izvršavati njegov main.
+Dakle, ovo su samo neke pripremne stvari.
+------------------------------------------
+Exercise 3.
+For petlja u main.c kroz svaku iteraciju poziva funkciju readseg koja čita kernel sa diska na odgovarajuću poziciju u memoriji.
+Nakon toga dolazi petlja (while ("pa<end_pa)") koja služi za učitavanje
+kernela sektor po sektor gdje su sektori raspoređeni po 512B. 
+Readsect je funkcija koja služi upravo za to, potpis je sledeći:
+readsect(void *dst, uint32_t offset)
+prvi argument je adresa gdje će sektor biti učitan u memoriji,
+drugi argument je offset tj. pomoću njega biramo koji sektor sa diska čitamo.
+Unutar nje se poziva funkcija waitdisk(), koja čeka da disk bude spreman za izvršenje čitanja.
+Sledeći izraz koji imamo je:
+outb(0x1F2, 1) direktno korespondira sa instrukcijama
+  mov $0x1, %al
+  mov $0x1f2, %edx
+  out %al, (%dx)
+outb(0x1F3, offset)
+  mov %ecx, %eax
+  mov $0x1f3, %edx
+  out %al, (%dx)
+outb(0x1F4, offset>>8)
+  mov $ecx, %eax
+  mov $0x1f4, %edx
+  shr $0x8, %eax
+  out %al, (%dx)
+outb(0x1F5, offset >> 16)
+  mov %ecx, %eax
+  mov $0x1f5, %edx
+  shr $0x10, %eax
+  out %al, (%dx)
+outb(0x1F6, (offset>>24)
+  mov %ecx, %eax
+  mov $0x1f6, %edx
+  shr $0x18, %eax
+  or $0xffffffe0, %eax
+  out %al, (%dx)
+outb(0x1F7, 0x20)
+  mov $0x20, %al
+  mov $0x1f7, %edx
+  out %al, (%dx)
+Poslije ove instrukcije opet ide poziv waitdisk fj-e ....
+Instrukcija insl(0x1F0, dst, SECTSIZE/4) se interpretira kroz sledeće instrukcije:
+  mov 0x8(%ebp), %edi
+  mov $0x80, %ecx
+  mov $0x1f0, %edx
+  cld
+  repnz insl (%dx), %es:(%edi)
+Na zadnjoj instrukciji gdb "zaglavi"
+1. At what point does the processor start executing 32-bit code? What exactly causes the switch from 16 to 32-bit mode?
+Procesor u programu bootloader izvršava dio koda u 16-bitnom REAL modeu operacija. u boot.S fajlu imamo set instrukcija koje vrše mijenjanje tačno određenog bita kako
+bi prešli u 32-bit PROTECTED mod operacija:
+movl %cr0, %eax
+orl $CR0_PE_ON, %eax
+movl %eax, %cr0
+Zašto imamo ovaj set instrukcija i zašto kopiramo vrijednosti iz jednog registra u drugi ?
+Ovi procesori su dizajnirani tako da ne dozvoljavaju direktne logičke operacije nad 
+kontrolnim registrima, tako da mi njegov sadržaj premjestimo u %eax registar, te u njemu radimo operaciju or-ovanja
+sa konstantom "$CR0_PE_ON" koja je već definisana da skupa sa OR operacijom promjeni nulti bit tj. PE bit na 1. 
+Onda tu dobijenu vrijednost vraćamo natrag u $cr0, i od ovoga trenutka možemo reći
+da CPU radi u PROTECTED modeu.
+U suštini tranzicija je uzrokovana settovanjem Protection Enable (PE) bita u CR0 registru .
+2. What is the last instruction of the boot loader executed, and what is the first instruction of the kernel it just loaded?
+Zadnja instrukcija bootloadera je:
+((void (*)(void)) (ELFHDR->e_entry))() -> pointer na funkciju (ne uzima argumente ne 
+vraća argumente), uzima se entry point kernela iz ELF headera.
+7d71: ff 15 18 00 01 00  ||call *0x10018||
+Idemo u entry adresu kernela.
+Prva instrukcija koju kernel izvršava je movw $0x1234, 0x472, jer se nalazi na 
+0xf010000c, entrypoint adresi kernela.
+3. Where is the first instruction of the kernel ?
+Odgovor na ovo pitanje je dat u zadnjoj rečenici prethodnog pitanja, dakle fizička adresa od 1MB + 12 odnosno 0xf010000c
+4. How does the boot loader decide how many sectors it must read in order to fetch the 
+entire kernel from disk? Where does it find this information?
+Bootloader ovu informaciju pronalazi na osnovu ELF headera.
+ELF header je struct koji čuva informacije o ELF fajlu, odnosno programu koji se učitavau memoriju.
+On sadrži informacije kao što su tip podataka sa kojim program radi, tip mašine koju podržava, entry point 
+adresu, broj section headera, broj i size program headera itd.
+---------------------------------
+EXERCISE 5.
+Kada sam promjenio adresu dešavalo se neko čudno ponašanje 
+gdje sam išao po instrukcijama i u jednom trenutku sam zapeo
+u poziv jedne te iste funkcije, nisam siguran koje. Ali znam da sam u gdbu bio na
+adresama instrukcija potpuno van opsega bootloadera.
+Kada sam uradio clean ponovo i kada sam postavio adresu za linkanje bootloadera
+na 0x7c00, uradio sam break na adresu, konkretno
+b *0xfe6ce. Jos kernel se skroz ucitao, dakle da sam zavrsio na mnogo vise od adrese 
+od 1MB. Vjerovatno je to neko nedefinirano ponasanje, ali mnoge stvari "pate" zbog ovoga
+uključujući segmentiranje, bootmain() funkcija, global descriptor tabela i slično.
+U drugom slučaju, kod postavljanja linkane adrese bootloadera na 0x8030, 
+pri izvršavanju koda na instrukciji na adresi 0x7c2d 
+(ljmp $0xb866, $0x88062), poslije izvršavanja ove instrukcije vrati se na prvu instrukciju BIOS-a 
+(cmpw $0x28, %cs:(%esi)). Znači u ovom slučaju, program bootloadera nas je poslao
+natrag na početak biosa.
+-----------------------------------
+EXERCISE 6.
+U prvom slučaju na adresi 0x00100000 u trenutku kada BIOS da pristup bootloaderu
+se ne nalazi ništa. 
+U drugom slučaju na istoj adresi u trenutku kada bootloader pristupa kernelu, ta vrijednost je drugačija, iz prostog razloga što kernel počinje da se piše u memoriji
+na adresi od 1MB+12 bajta, a mi ispisujemo 8 wordova 
+(koji su po 16 bita u intel notaciji) odnosno prvih 16 bajta od adrese 1MB, dakle zahvatili smo 4 bajta.
+----------------------------------
+EXERCISE 8.
+U fajlu printfmt.c kojeg poziva printf.c, zamjenio sam 4 linije u 
+case 'o':
+  putch ('X', putdat);
+  putch ('X', putdat);
+  putch ('X', putdat);
+  break;
+sa linijama:
+  num = getuint(&ap, lflag);
+  base = 8;
+  goto number;
+1. Explain the interface between printf.c and console.c. Specifically, what funkction
+does console.c export? How is this function used by printf.c?
+U suštini veza između printf.c i console.c je funkcija cputchar 
+koju eksportuje console.c. Ta funkcija poziva novu
+funkciju cons_putc koja ispisuje character na konzolu tj. ekran. 
+Printf.c uzima funkciju cputchar i koristi je za ispis nakon sto je printf dobio string
+kao argument i prolazi kroz njega znak po znak korištenjem adrese tog niza charova.
+2. Explain the following from console.c:
+	if (crt_pos >= CRT_SIZE) {
+               int i;
+               memmove(crt_buf, crt_buf + CRT_COLS, (CRT_SIZE - CRT_COLS) * sizeof(uint16_t));
+               for (i = CRT_SIZE - CRT_COLS; i < CRT_SIZE; i++)
+                       crt_buf[i] = 0x0700 | ' ';
+               crt_pos -= CRT_COLS;
+      				 }
+Ovaj dio koda se brine o tome da ostanemo na ekranu u konzoli, tj da ne odemo nigdje 
+van okvira ekrana sa kursorom. Dakle:
+if (crt_pos >= CRT_SIZE) 
+  ukoliko je pozicija veća ili jednaka ivici trenutnog ekrana konzole, da se uradi 
+  sledeće:
+    inicijalizira se varijabla i 
+    funkcija memmove prima buffer nečeg, pa taj buffer sabran sa kolonama ekrana pretpostavljam, 
+    i kao treći argument prima se razlika sizea i kolona što može dati broj tih kao
+    pozicija na koju možemo upisati neki karakter pomnožen sa word-ovima
+    for petlja unutar ovog if-a "čisti" pozicije ekrana sa praznim karakterom
+    linija crt_pos -= CRT_COLS
+    služi kod scrollanja, prelaska u novi red itd. da bi vratilo poziciju kursora tj. da postavi
+    izgled ekrana na željenu defaultnu poziciju. U suprotnom da nema ovih stvari kada izađemo iz okvira displeja konzole
+    ne bi se ništa ispisivalo.
+3. Trace the execution of the following code step-by-step:
+  int x = 1, y = 3, z = 4;
+  cprintf("x %d, y %x, z %d\n", x, y, z);
+  -In the call to cprintf(), to what does fmt point? To what does ap point?
+fmt je pointer na niz charova, tj. to je prvi argument ove funkcije, 
+a ap je lista argumenata.
+  -List(in order of execution) each call to cons_putc, va_arg, and vcprintf. For 
+  cons_putc, list its argumenet as well. For va_arg, list what ap points to before
+  and after the call. For vcprintf list the values of its two arguments.
+Prvi se poziva vcprintf, onda se iz funkcije getint vraća funkcija
+va_arg, cons_putc se poziva zadnji. 
+cons_putc se poziva zadnji sa int (ascii vrijednošću) karaktera
+Argumenti funkcije vcprintf su fmt i ap.
+Vrijednost na koju ap pokazuje prije poziva --> (va_list) 0xf010ffd4 "\001"
+Vrijednost na koju ap pokazuje poslije poziva --> (va_list) 0xf010ffd8 "\003" 
+4.
+  unsigned int i = 0x00646c72;
+  cprintf("H%x Wo%s", 57616, &i);
+  What is the output? Explain how this output is arrived at in the step-by-step manner
+  of the previous exercise.
+Prvo se poziva va_start koji prima argumente ap i fmt, 
+onda se poziva vcprintf sa argumentima fmt i ap, onda se inicijalizira cnt, pa se poziva vprint, podesavaju se neki flagovi pa se poziva funkcija
+va_arg sa pointerom na ap i tipom, i unutar te funkcije ulazi se u case x za base 16 odnosno hexadecimalni zapis, to je zbog ovog %X u zapisu, dalje ide u cons_putc, pa se 
+provjerava u console.c da li je pozicija dobra, pa se dalje pozivaju ostale zavisne funkcije outb cputchar itd.
+adresa od i se prosljeduje u string, dakle unutar funkcije va_arg ulazi se u case s.
+U x86 BIG ENDIAN modu, da bi dobili isti rezultat najlakše je da broj 
+0x00646c72
+zapisemo kao
+0x726c6400
+a za %x da bi dobili isti rezultat broj 57616 mora biti 4321
+57616->0xE110 | 0x10E1 sto je 4321 u decimalnom.
+5.
+cprintf("x=%d y=%d", 3) 
+Funkcija cprintf kao prvi argument očekuje fmt (format string).
+U implementaciji ove funkcije očekivana je inicijalizacija varijable ap na način
+va_list ap;
+va_list je tip koji predstavlja pointer kroz listu argumenata koji su proslijeđeni
+funkciji. Ova lista argumenata direktno ovisi od fmt stringa. Zašto je to tako?
+Pa to je tako jer ni na jedan drugi način funkcija ne može znati koliko argumenata
+je poslano, kojeg su tipa niti kojim redoslijedom ih treba čitati.
+Zato, funkcija cprintf ima pomoćnu funkciju printfmt.c koja se nalazi u lib folderu
+u kojoj su definisani svi "caseovi" ovih znakova unutar apostrofa (%d, %s, %o, %x) 
+itd. Oni se kroz ovu funkciju i pomoću funkcija kao što su getuint, getint, va_ar
+formatiraju na određeni način kako bi ispisali ono što želimo na ekranu. Eh sad,
+šta se dešava u našoj datoj situaciji. Format string je napisan na način da očekuje
+dvije vrijednosti odnosno dva argumenta pored fmt-a. Mi smo dali samo jedan.
+Sa obzirom da ni na koji način u ovoj implementaciji nije handleovan exception da bi 
+spriječio cprintf da pristupi nepostojećem argumentu. Zbog toga na ovom drugom mjestu
+očekivanog ispisa vrijednosti, ispiše se nešto. Šta je nešto ? Pa bilo šta što se 
+u tom trenutku nađe u memoriji na adresi sa koje funkcija čita tu vrijednost.
+6.
+Let's say that GCC changed its calling convention so that it pushed arguments on the stack in declaration order, 
+so that the last argument is pushed last. How would you have to change cprintf or its interface so 
+that it would still be possible to pass it a variable number of arguments?
+Argumenti funkcije se po konvenciji pushaju na stack na nacin da posljednji argument bude na vrhu stacka, odnosno
+prvi argument bude zadnji na stacku. Da bi se ovo omogućilo 
+potrebno je promjeniti definiciju va start funkcije, jer ona očekuje argumente kako je definisano po konvenciji, 
+U drugom slučaju, može da se ne koristi ova konvencija ali onda bi se morale napraviti promjene u va_start i va_end
+ili da se nekim drugim pristupom dođe do rješenja.
+Možda bi se sama printf funkcija mogla promjeniti na način da ona 
+zna gdje su argumenti i u kojem su redoslijedu bez va_start i va_end.
+Možda najlakše rješenje bi bilo da se proslijedi dodatni broj argumenata i da se čitaju preko pointera npr.
+EXERCISE 9.
+na adresi 0xf0100034 instrukcija mov $0xf0110000, %esp
+Efektivno setuje stack pointer na adresu od 4 i nesto gigabajta, 
+dakle gotovo na maksimalnu adresu u fizičkom adresnom prostoru. To nam omogućava da koristimo stack nesmetano
+u nasim programima, a stacku da raste nadole nesmetano.
+Kernel se rezerviše sa 8*4096 sto je 32KB prostora.
+Kernel se "širi" na način da programi koriste push i pop instrukcije u zavisnosti od 
+svojih potreba, na taj način stack raste ili opada.
+EBP se inicijalizira na nulu instrukcijom mov 0x0, %ebp na adresi 0x10002f, ali to i ima smisla jer
+efektivno EBP zavisi od ESP-a. EBP je na adresi od 0x10002f što je tu oko 1MB, jer njegova adresa nije ni bitna u smislu da samim
+manipulisanjem ESP-a, i EBP će se pomjeriti, ali može biti da je razlog toga upravo jer se kernel učitava na adresu od 1MB+12B.
+ESP pokazuje na donji vrh stacka i širi se ka dole. To je razlog zašto se oduzima da bi se širio.
+U svakom pozivu test_backtracea pusha se %ebp, automatski se pusha %eip, onda se pusha %ebx, pa onda pushamo
+%ebx sa vrijednosti 5 pa se pusha adresa koja je pointer na niz charova koju poziva funkcija printf, i 
+pusha se %eax sa vrijednosti 4, koja je takodje argument ove funkcije printf, dakle to je 6 32bitnih vrijednosti.
+
+
