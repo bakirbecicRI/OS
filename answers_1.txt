@@ -223,7 +223,7 @@ EXERCISE 9.
 na adresi 0xf0100034 instrukcija mov $0xf0110000, %esp
 Efektivno setuje stack pointer na adresu od 4 i nesto gigabajta, 
 dakle gotovo na maksimalnu adresu u fizičkom adresnom prostoru. To nam omogućava da koristimo stack nesmetano
-u nasim programima, a stacku da raste nadole nesmetano.
+u našim programima, a stacku da raste nadole nesmetano.
 Kernel se rezerviše sa 8*4096 sto je 32KB prostora.
 Kernel se "širi" na način da programi koriste push i pop instrukcije u zavisnosti od 
 svojih potreba, na taj način stack raste ili opada.
@@ -231,8 +231,55 @@ EBP se inicijalizira na nulu instrukcijom mov 0x0, %ebp na adresi 0x10002f, ali 
 efektivno EBP zavisi od ESP-a. EBP je na adresi od 0x10002f što je tu oko 1MB, jer njegova adresa nije ni bitna u smislu da samim
 manipulisanjem ESP-a, i EBP će se pomjeriti, ali može biti da je razlog toga upravo jer se kernel učitava na adresu od 1MB+12B.
 ESP pokazuje na donji vrh stacka i širi se ka dole. To je razlog zašto se oduzima da bi se širio.
+EXERCISE 10.
 U svakom pozivu test_backtracea pusha se %ebp, automatski se pusha %eip, onda se pusha %ebx, pa onda pushamo
 %ebx sa vrijednosti 5 pa se pusha adresa koja je pointer na niz charova koju poziva funkcija printf, i 
-pusha se %eax sa vrijednosti 4, koja je takodje argument ove funkcije printf, dakle to je 6 32bitnih vrijednosti.
+pusha se %eax sa vrijednosti 4, koja je takođe argument ove funkcije printf, dakle to je 6 32bitnih vrijednosti.
+Backtrace funkcija služi za praćenje koda kod debuggiranja. Pomoću nje pratimo adrese funkcija i šta svaka
+od njih pusha na stack.
+EXERCISE 11.
+Objašnjenje implementacije
+Ova funkcija će nam služiti za ispis adresa ebp, eipa, argumenata, i lokacije u source
+codeu što je dio 12. zadatka. prvo sam definisao varijablu ebp koja će biti korištena
+da čuva trenutnu vrijednost odnosno frame pointera, dakle pokazuje na početak 
+trenutnog stack framea. Pomoću funkcije read_ebp koja se nalazi u lab/inc/x86.h fajlu i efektivno služi da se registar $ebp spremi u varijablu. To radi pomoću funkcije
+asm_volatile. Znači ebp nam služi za praćenje poziva funkcija.
+linija "struct Eipdebuginfo info" je dio koda koji je vezan za 12. zadatak, ali zasada
+ćemo reći da je to dio vezan za ispisivanje informacija o lokaciji u trenutnom kodu i 
+ispisivanju tih informacija. Ispisujemo Stack backtrace sa cprintf-om. For petlja koju
+vidimo ovdje služi nam da prolazimo kroz lanac ovih ebp frame pointera (onoliko koliko ih imamo). 
+Mogli smo ovo uraditi i sa while petljom, ali ovo izgleda malo 
+atraktivnije. Dakle for petlja će izvršavati kod sve dok ebp nije nula, a ebp će se
+kroz svaku iteraciju sa "ebp = *(uint32_t *)(ebp) setovati na prethodni frame. Zašto je to tako, 
+pa zato što svaki stack frame mora da čuva informaciju o prethodnoj lokaciji ebp-a iz prethodnog 
+stack framea. Inspiraciju za ovako napisan kod sam pronašao
+na prezentaciji OS-P1 na stranici 29, gdje jasno vidimo i pričali smo sa profesorom 
+da u svakom stack frameu, adresa instrukcije povratka, dakle adresa koju koristi 
+ret instrukcija, je pohranjena odmah iznad EBP-a. Tako da linija:
+uint32_t eip = *(uint32_t *)(ebp + 4)
+setuje eip na njegovu trenutnu adresu.
+*(uint32_t *) - ovo u suštini kombinuje castiranje i derefenciranje. Dakle dio u 
+zagradi služi da se ovo pretvori u pointer na 32 bitni unsigned integer. Dakle ako
+uradimo + 1 on pomjera za 8 bita tj. bajt. A * izvan zagrade derefencira tj uzima 
+vrijednost na koju pointer pokazuje. Dakle ova linija znači "pročitaj 4 bajta sa 
+adrese ebp+4". cprintf ispisuje ebp i eip pri čemu se koristi format %08x koji kaže
+ispiši u hexadec formatu 8 cifara, vodeće nule. Unutrašnja for petlja služi
+za ispis pet argumenata funkcije sa stacka, odnosno 5 4-bajtnih vrijednosti od eipa
+pa nagore. Dakle od ebp+8, pa tako nagore. Zbog toga je i inicijaliziran na 8, 
+a i+=4, povećava i u svakoj iteraciji za 4 jer je svaka vrijednost 4 bajta. Unutar
+imamo cprintf koji koristi u ispisu ebp+i, dakle ovo i kojim manipulišemo u petlji.
+Onda prelazimo u novi red nakon ispisa adresa i argumenata. Poslije toga pozivamo
+debuginfo_eip(eip, &info), ovo poziva funkciju koja pomoću informacija koje se 
+procesiraju u fajlu kern/kdebug.c pronalazi izvorni source fajl, adresu početka 
+funkcije, ime funkcije, liniju u kodu itd. Zbog toga proslijeđujemo adresu ove naše
+strukture info koja je instanca od Eipdebuginfo, i te informacije se upisuju u 
+ovu strukturu. Posljednji cprintf Služi za ispis naziva fajla, broja linije, ime
+funkcije, ofset unutar funkcije, tj. koliko smo daleko od početka te funkcije.
+Zbog nekog razloga imao sam problem sa formatiranjem ovog ispisa i grade skripta nije
+htjela da prolazi ali sam dodavanjem "%.*s" to riješio. Ali zbog ovog formata 
+morali smo dodati ovaj namelen jer ovaj format očekuje kao prvi argument koliko
+karaktera iz stringa treba ispisati. Ovaj ofset se dobija na način da oduzmemo
+eip od adrese funkcije, a adresa pokazuje na početak funkcije. 
+
 
 
