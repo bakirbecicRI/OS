@@ -280,6 +280,65 @@ htjela da prolazi ali sam dodavanjem "%.*s" to riješio. Ali zbog ovog formata
 morali smo dodati ovaj namelen jer ovaj format očekuje kao prvi argument koliko
 karaktera iz stringa treba ispisati. Ovaj ofset se dobija na način da oduzmemo
 eip od adrese funkcije, a adresa pokazuje na početak funkcije. 
+EXERCISE 12.
+STABS simboli (__STAB_*) su simboli odnosno bolje možda reći format koji GCC koristi
+kada debugira kod. Oni sadrže podatke o varijablama, fajlovima, linijama, funkcijama
+kroz njihove tipove npr:
+N_FUN -> funkcija
+N_SLINE -> linija koda
+N_SO -> fajl
+itd.
+Ovi tipovi su definirani u lab/inc/stab.h.
+U kernel.ld ovaj dio koda:
+	/* Include debugging information in kernel memory */
+	.stab : {
+		PROVIDE(__STAB_BEGIN__ = .);
+		*(.stab);
+		PROVIDE(__STAB_END__ = .);
+		BYTE(0)		/* Force the linker to allocate space
+				   for this section */
+	}
 
+	.stabstr : {
+		PROVIDE(__STABSTR_BEGIN__ = .);
+		*(.stabstr);
+		PROVIDE(__STABSTR_END__ = .);
+		BYTE(0)		/* Force the linker to allocate space
+				   for this section */
+	}
+kao što sami komentar kaže linker skripta tj. kernel.ld postavlja ove STABS simbole 
+u kernel memoriju. Dakle oni su dostupni u memoriji tokom samog izvođenja kernela.
+Na osnovug ovog funkcija debuginfo_eip može direktno pristupiti STABS simbolima
+da mapira eip tj da nađe neophodne podatke koje debuginfo_eip funkcija izdvaja.
+Dakle funkcija debuginfo_eip služi kao što smo rekli da pronađe neophodne i popuni
+strukturu koja ima ove informacije konkretno:
+// Initialize *info
+	info->eip_file = "<unknown>";
+	info->eip_line = 0;
+	info->eip_fn_name = "<unknown>";
+	info->eip_fn_namelen = 9;
+	info->eip_fn_addr = addr;
+	info->eip_fn_narg = 0;
+Funkcija debuginfo_eip ima implementiran algoritam pretraživanja koji pronalazi
+funkciju ili liniju. Moj zadatak je bio da implementiram dio koji pronalazi 
+liniju koda na osnovu adrese eip-a. 
+Uradio sam to na sledeći način:
+  stab_binsearch(stabs, &lline, &rline, N_SLINE, addr);
 
-
+  if (lline <= rline) {
+  info->eip_line=stabs[lline].n_desc;
+  }
+  else {
+    return -1;
+  }
+Dakle ukoliko se nađe neki indeks koji odgovara prije indeksa zadnje linije
+zapišimo to u info->eip_line a stabs[lline] pokazuje na liniju koju prati eip a 
+n_desc sadrzi tačan broj linije u fajlu.
+U jednom zapisu kada sam za indeks probao da uzmem rline sam dobio iste vrijednosti
+ne znam ni ja kako, to bi se logično trebalo desiti ukoliko postoji samo jedna linija
+koja pokriva tu adresu. Moguće da je bio neki bug ili slično.
+Komandom:
+gcc -pipe -nostdinc -O2 -fno-builtin -I. -MD -Wall -Wno-format -DJOS_KERNEL -gstabs -c -S kern/init.c
+Dobijemo asembler fajl koji sadrzi instrukcije direktive i između ostalog i 
+STABS debug informacije. Ovaj fajl se koristi u procesuiranju debuginfo_eip funkcije
+i generalno se koriste za backtrace i debug.
