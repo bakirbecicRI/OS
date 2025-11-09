@@ -24,7 +24,7 @@ struct Command {
 static struct Command commands[] = {
 	{ "help", "Display this list of commands", mon_help },
 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
-  { "backtrace", "Shows the backtrace of called functions", mon_backtrace }
+  { "backtrace", "Prints a stack backtrace by walking through saved frame pointers, showing each function ebp, eip, arguments, and corresponding source code location", mon_backtrace }
 };
 
 /***** Implementations of basic kernel monitor commands *****/
