@@ -22,7 +22,7 @@ Exercise 3.
 For petlja u main.c kroz svaku iteraciju poziva funkciju readseg koja čita kernel sa diska na odgovarajuću poziciju u memoriji.
 Nakon toga dolazi petlja (while ("pa<end_pa)") koja služi za učitavanje
 kernela sektor po sektor gdje su sektori raspoređeni po 512B. 
-Readsect je funkcija koja služi upravo za to, potpis je sledeći:
+Readsect je funkcija koja služi upravo za učitavanje sektora, potpis je sledeći:
 readsect(void *dst, uint32_t offset)
 prvi argument je adresa gdje će sektor biti učitan u memoriji,
 drugi argument je offset tj. pomoću njega biramo koji sektor sa diska čitamo.
@@ -283,11 +283,56 @@ efektivno EBP zavisi od ESP-a. EBP je na adresi od 0x10002f što je tu oko 1MB, 
 manipulisanjem ESP-a, i EBP ćemo pomjerati, ali može biti da je razlog toga upravo jer se kernel učitava na adresu od 1MB+12B.
 ESP pokazuje na donji vrh stacka i širi se ka dole. To je razlog zašto se oduzima da bi se širio.
 EXERCISE 10.
-U svakom pozivu test_backtracea pusha se %ebp, automatski se pusha %eip, onda se pusha %ebx, pa onda pushamo
-%ebx sa vrijednosti 5 pa se pusha adresa koja je pointer na niz charova koju poziva funkcija printf, i 
-pusha se %eax sa vrijednosti 4, koja je takođe argument ove funkcije printf, dakle to je 6 32bitnih vrijednosti.
+U prvom pozivu test_backtracea pusha se %ebp, automatski se pusha %eip, onda se pusha %ebx, pa onda ponovo pushamo
+%ebx, ovog puta sa vrijednosti 5 (trenutna pozvana vrijednost) pa se pusha adresa koja je pointer 
+na niz charova koju poziva funkcija printf, i pusha se %eax sa vrijednosti 4, koja je takođe argument ove funkcije printf, dakle to je 6 32bitnih vrijednosti.
+Ostali pozivi su identični samo se različite vrijednosti mijenjaju između ovih %ebx i %eax registara.
 Backtrace funkcija služi za praćenje koda kod debuggiranja. Pomoću nje pratimo adrese funkcija i šta svaka
 od njih pusha na stack.
+Ispratimo kod:
+void test_backtrace(int x) { 
+f0100040: 55 push %ebp 
+f0100041: 89 e5 mov %esp,%ebp 
+f0100043: 53 push %ebx 
+f0100044: 83 ec 0c sub $0xc,%esp 
+f0100047: 8b 5d 08 mov 0x8(%ebp),%ebx 
+	cprintf("entering test_backtrace %d\n", x); 
+f010004a: 53 push %ebx 
+f010004b: 68 40 19 10 f0 push $0xf0101940 
+f0100050: e8 6a 09 00 00 call 
+f01009bf 
+<cprintf> 
+	if (x > 0) 
+f0100055: 83 c4 10 add $0x10,%esp 
+f0100058: 85 db test %ebx,%ebx 
+f010005a: 7e 25 jle f0100081 
+<test_backtrace+0x41> 
+	test_backtrace(x-1); 
+f010005c: 83 ec 0c sub $0xc,%esp 
+f010005f: 8d 43 ff lea -0x1(%ebx),%eax 
+f0100062: 50 push %eax 
+f0100063: e8 d8 ff ff ff call f0100040 
+<test_backtrace> 
+f0100068: 83 c4 10 add $0x10,%esp 
+	else 
+		mon_backtrace(0, 0, 0); 
+	cprintf("leaving test_backtrace %d\n", x); 
+f010006b: 83 ec 08 sub $0x8,%esp 
+f010006e: 53 push %ebx 
+f010006f: 68 5c 19 10 f0 push $0xf010195c 
+f0100074: e8 46 09 00 00 call f01009bf 
+<cprintf> 
+}
+Dakle svaki rekurzivni nivo fnkcije test_backtrace inicijalno stavlja na stack 6
+32-bitnih wordova pomoću push instrukcija, čime se čuvaju vrijednosti koje sam već
+naveo. Međutim, moram napomenuti da se nakon povratka iz rekurzije, kada se 
+izvršava cprintf("leaving test_backtrace %d\n", x), još dva dodatna 32-bitna worda
+se direktno pushaju na stack (argzmenti i registri potrebni za ispis), čime se 
+kompletira kompletan stack frame za jedan nivo rekurzije. Dakle inicijalno se 
+pri svakom rekurzivnom pozivu funkcije test_backtrace na stack push-a ukupno 6
+32-bitnih wordova, ali nakon povratka iz rekurzivne funkcije ispod se dodatno izvrše
+još 2 push instrukcije, čime se upotpuni cijeli stack frame.
+Nešto stacka se i ručno rezerviše sa instrukcijama poput sub $0xc, %esp.
 EXERCISE 11.
 Objašnjenje implementacije
 Ova funkcija će nam služiti za ispis adresa ebp, eipa, argumenata, i lokacije u source
