@@ -3,7 +3,7 @@
 #include <inc/stdio.h>
 #include <inc/string.h>
 #include <inc/assert.h>
-
+#include "console.h"
 #include <kern/monitor.h>
 #include <kern/console.h>
 
@@ -37,6 +37,8 @@ i386_init(void)
 
   int x = 1, y = 3, z = 4;
   cprintf("x %d, y %x, z %d\n", x, y, z);
+ 
+	 
 
   unsigned int i = 0x00646c72;
   cprintf("H%x Wo%s", 57616, &i);
@@ -44,6 +46,21 @@ i386_init(void)
   cprintf("x=%d y=%d", 3);
 	// Test the stack backtrace function (lab 1 only)
 	test_backtrace(5);
+  cprintf("Normalni tekst\n");
+  colored_cprintf(COLOR_RED, "Crveni tekst\n");
+  colored_cprintf(COLOR_BLUE, "Plavi tekst\n");
+  colored_cprintf(COLOR_GREEN, "Zeleni tekst\n");
+  colored_cprintf(COLOR_BROWN, "Smedji tekst\n");
+  colored_cprintf(COLOR_LIGHTBLUE, "Svijetloplavi tekst\n");
+  colored_cprintf(COLOR_PINK, "Rozi tekst\n");
+  colored_cprintf(COLOR_YELLOW, "Zuti tekst\n");
+  colored_cprintf(COLOR_CYAN, "Tirkizni tekst\n");
+  colored_cprintf(COLOR_LIGHTGRAY, "Svijetlosivi tekst\n");
+  colored_cprintf(COLOR_DARKGRAY, "Tamnosivi tekst\n");
+  colored_cprintf(COLOR_LIGHTGREEN, "Svijetlozeleni tekst\n");
+  colored_cprintf(COLOR_LIGHTCYAN, "Svijetlotirkizni tekst\n");
+  colored_cprintf(COLOR_LIGHTRED, "Svijetlocrveni tekst\n");
+  colored_cprintf(COLOR_MAGENTA, "Ljubicasti tekst\n");
 
 	// Drop into the kernel monitor.
 	while (1)
