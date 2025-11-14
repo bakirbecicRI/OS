@@ -86,7 +86,7 @@ sa konstantom "$CR0_PE_ON" koja je već definisana da skupa sa OR operacijom pro
 Onda tu dobijenu vrijednost vraćamo natrag u $cr0, i od ovoga trenutka možemo reći
 da CPU radi u PROTECTED modeu.
 U suštini tranzicija je uzrokovana settovanjem Protection Enable (PE) bita u CR0 registru.
-Nakon što je tranzicija omogućena na adresi 0x7c2d, instrukcija ljmp $0x8, $0x7c32 omogućava mijenja %cs registar, 
+Nakon što je tranzicija omogućena na adresi 0x7c2d, instrukcija ljmp $0x8, $0x7c32 mijenja %cs registar, 
 postavlja %eip i omogućava da se krenu izvršavati 32-bitne instrukcije.
 Dakle odavde pa nadalje (.code32 direktiva pa nadalje) instrukcije se izvršavaju u 32-bitnom modu.
 2. What is the last instruction of the boot loader executed, and what is the first instruction of the kernel it just loaded?
