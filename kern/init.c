@@ -61,7 +61,8 @@ i386_init(void)
   colored_cprintf(COLOR_LIGHTCYAN, "Svijetlotirkizni tekst\n");
   colored_cprintf(COLOR_LIGHTRED, "Svijetlocrveni tekst\n");
   colored_cprintf(COLOR_MAGENTA, "Ljubicasti tekst\n");
-
+  colored_cprintf(COLOR_RED, "Broj: %d\n", 25);
+ 
 	// Drop into the kernel monitor.
 	while (1)
 		monitor(NULL);
