@@ -8,13 +8,13 @@ Ova instrukcija mijenja stanje flagova, ali ne ničega drugog. Popratni efekt ov
 ali vjerovatno se sa te adrese čita vrijednost kako bi se ustanovilo da li je BIOS u tom trenutku na pravom mjestu
 Sledeća instrukcija je jne 0x241d0ad, što nam daje do znanja da će se na ovu adresu jumpati odnosno neće, u zavisnosti od 
 rezultata instrukcije iznad. Detaljnije rečeno, CPU će skočiti na ovu adresu ako prethodno izvršeni cmpw nije vratio jednakost tj. ako je ZF = 0 (zeroflag)
-Na ovu se adresu ide ako nešto nije krenulo po planu pri bootu OS-a, najbolje rečeno
+Na ovu se adresu ide ako nešto nije krenulo po planu pri bootu računara, najbolje rečeno
 Sledeća instrukcija je xor %edx,%edx. Setuje registar %edx na nulu, jer će ga BIOS koristiti u budućnosti.
 Sledeća instrukcija je mov %edx, %ss
 Ovom instrukcijom se segmentni registar %ss postavlja na nulu
 Sledećom instrukcijom, mov $0x7000, %sp
 Znači da će u %sp (%sp se koristi jer smo u 16 bitnom modu) postaviti stack pointer na adresu 0x7000
-U suštini vidimo da BIOS radi neke provjere inicijalizuje segmentni registar i stack pointer, dakle neka priprema za dalji tok procesa boota
+U suštini vidimo da BIOS radi neke provjere, inicijalizuje segmentni registar i stack pointer, dakle neka priprema za dalji tok procesa boota
 Da napomenemo da je je jedan od glavnih zadataka BIOS-a da prije svega nađe program koji se zove bootloader, učita ga i počne izvršavati njegov main.
 Dakle, ovo su samo neke pripremne stvari.
 ------------------------------------------
@@ -56,8 +56,8 @@ outb(0x1F7, 0x20)
   mov $0x20, %al
   mov $0x1f7, %edx
   out %al, (%dx)
-Poslije ove instrukcije opet ide poziv waitdisk fj-e ....
-Instrukcija insl(0x1F0, dst, SECTSIZE/4) se interpretira kroz sledeće instrukcije:
+Poslije ove instrukcije opet ide poziv waitdisk fj-e (call instrukcija).
+Linija insl(0x1F0, dst, SECTSIZE/4) se interpretira kroz sledeće instrukcije:
   mov 0x8(%ebp), %edi
   mov $0x80, %ecx
   mov $0x1f0, %edx
@@ -127,14 +127,15 @@ U drugom slučaju, kod postavljanja linkane adrese bootloadera na 0x8030,
 pri izvršavanju koda na instrukciji na adresi 0x7c2d 
 (ljmp $0xb866, $0x88062), poslije izvršavanja ove instrukcije vrati se na prvu instrukciju BIOS-a 
 (cmpw $0x28, %cs:(%esi)). Znači u ovom slučaju, program bootloadera nas je poslao
-natrag na početak biosa.
+natrag na početak biosa. Ovo je prva instrukcija koja će raditi pogrešno ukoliko postavimo bootloader 
+link adresu na nešto drugo.
 -----------------------------------
 EXERCISE 6.
 U prvom slučaju na adresi 0x00100000 u trenutku kada BIOS da pristup bootloaderu
-se ne nalazi ništa. 
-U drugom slučaju na istoj adresi u trenutku kada bootloader pristupa kernelu, ta vrijednost je drugačija, iz prostog razloga što kernel počinje da se piše u memoriji
-na adresi od 1MB+12 bajta, a mi ispisujemo 8 wordova 
-(koji su po 16 bita u intel notaciji) odnosno prvih 16 bajta od adrese 1MB, dakle zahvatili smo 4 bajta.
+se ne nalazi ništa, BIOS i bootloader koriste samo low memory ispod 1MB. 
+U drugom slučaju na istoj adresi u trenutku kada bootloader pristupa kernelu, te vrijednosi su drukčije, iz prostog razloga što kernel počinje da se piše u memoriji
+na adresi od 1MB, a mi ispisujemo 8 wordova 
+(koji su po 16 bita u intel notaciji) odnosno prvih 16 bajta od adrese 1MB, dakle vidimo neke vrijednosti tj. binarne kodove instrukcija kernela.
 ----------------------------------
 EXERCISE 8.
 U fajlu printfmt.c kojeg poziva printf.c, zamjenio sam 4 linije u 
@@ -258,8 +259,8 @@ formatiraju na određeni način kako bi ispisali ono što želimo na ekranu. Eh 
 šta se dešava u našoj datoj situaciji. Format string je napisan na način da očekuje
 dvije vrijednosti odnosno dva argumenta pored fmt-a. Mi smo dali samo jedan.
 Sa obzirom da ni na koji način u ovoj implementaciji nije handleovan exception da bi 
-spriječio cprintf da pristupi nepostojećem argumentu. Zbog toga na ovom drugom mjestu
-očekivanog ispisa vrijednosti, ispiše se nešto. Šta je nešto ? Pa bilo šta što se 
+spriječio cprintf da pristupi nepostojećem argumentu, zbog toga na ovom drugom mjestu
+očekivanog ispisa vrijednosti, ispiše se uvijek nešto. Šta je nešto ? Pa bilo šta što se 
 u tom trenutku nađe u memoriji na adresi sa koje funkcija čita tu vrijednost.
 6.
 Let's say that GCC changed its calling convention so that it pushed arguments on the stack in declaration order, 
@@ -275,15 +276,15 @@ zna gdje su argumenti i u kojem su redoslijedu bez va_start i va_end.
 Možda najlakše rješenje bi bilo da se proslijedi dodatni broj argumenata i da se čitaju preko pointera.
 EXERCISE 9.
 na adresi 0xf0100034 instrukcija mov $0xf0110000, %esp
-Efektivno setuje stack pointer na adresu od 4 i nesto gigabajta, 
-dakle gotovo na maksimalnu adresu u fizičkom adresnom prostoru. To nam omogućava da koristimo stack nesmetano
+Efektivno setuje stack pointer na vrlo visoku adresu. 
+dakle gotovo na maksimalnu adresu u adresnom prostoru kernela. To nam omogućava da koristimo stack nesmetano
 u našim programima, a stacku da raste nadole nesmetano.
-Kernel se rezerviše sa 8*4096 sto je 32KB prostora.
+Kernel stack se rezerviše sa 8*4096 sto je 32KB prostora. (instrukcije u entry.S)
 Kernel se "širi" na način da programi koriste push i pop instrukcije u zavisnosti od 
 svojih potreba, na taj način stack raste ili opada.
-EBP se inicijalizira na nulu instrukcijom mov 0x0, %ebp na adresi 0x10002f, ali to i ima smisla jer
-efektivno EBP zavisi od ESP-a. EBP je na adresi od 0x10002f što je tu oko 1MB, jer njegova adresa nije ni bitna u smislu da samim
-manipulisanjem ESP-a, i EBP ćemo pomjerati, ali može biti da je razlog toga upravo jer se kernel učitava na adresu od 1MB+12B.
+EBP se inicijalizira na nulu instrukcijom mov 0x0 jer na prvom ulasku u C funkciju
+(i386_init) nastaje prvi realni stack frame, nakon toga svaka funkcija zasebno
+postavlja svoj EBP i stbara lanac stack frameova.
 ESP pokazuje na donji vrh stacka i širi se ka dole. To je razlog zašto se oduzima da bi se širio.
 EXERCISE 10.
 U prvom pozivu test_backtracea pusha se %ebp, automatski se pusha %eip, onda se pusha %ebx, pa onda ponovo pushamo
@@ -378,8 +379,9 @@ funkcije, ofset unutar funkcije, tj. koliko smo daleko od početka te funkcije.
 Zbog nekog razloga imao sam problem sa formatiranjem ovog ispisa i grade skripta nije
 htjela da prolazi ali sam dodavanjem "%.*s" to riješio. Ali zbog ovog formata 
 morali smo dodati ovaj namelen jer ovaj format očekuje kao prvi argument koliko
-karaktera iz stringa treba ispisati. Ovaj ofset se dobija na način da oduzmemo
-eip od adrese funkcije, a adresa pokazuje na početak funkcije. 
+karaktera iz stringa treba ispisati. Ovaj ofset tj. daljinu od početka fje 
+se dobija na način da oduzmemo eip od adrese funkcije, 
+a adresa pokazuje na početak funkcije. 
 EXERCISE 12.
 STABS simboli (__STAB_*) su simboli odnosno bolje možda reći format koji GCC koristi
 kada debugira kod. Oni sadrže podatke o varijablama, fajlovima, linijama, funkcijama
