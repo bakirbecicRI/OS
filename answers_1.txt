@@ -109,7 +109,7 @@ u boot/main.c), zatim koliko bajtova svaki segment zauzima u memoriji i na disku
 "p_memsz", "p_filesz". Poslije bootloader zatim prolazi kroz sve program segmente
 i za svaki računua koliko sektora je potrebno čitati sa diska tako što uzme
 offset segmenta i njegovu veličinu. Veličina je veličina sektora (512 bajtova), a sve
-sektore čita pomoću funkcije readseg i readsect funkcija.
+sektore čita pomoću funkcije readseg i readsect funkcije.
 ELF header sadrži informacije kao što su tip podataka sa kojim program radi, tip mašine koju podržava, entry point 
 adresu, broj section headera.
 ---------------------------------
@@ -311,7 +311,7 @@ Kernel se "širi" na način da programi koriste push i pop instrukcije u zavisno
 svojih potreba, na taj način stack raste ili opada.
 EBP se inicijalizira na nulu instrukcijom mov 0x0 jer na prvom ulasku u C funkciju
 (i386_init) nastaje prvi realni stack frame, nakon toga svaka funkcija zasebno
-postavlja svoj EBP i stbara lanac stack frameova.
+postavlja svoj EBP i stvara lanac stack frameova.
 ESP pokazuje na donji vrh stacka i širi se ka dole. To je razlog zašto se oduzima da bi se širio.
 EXERCISE 10.
 U prvom pozivu test_backtracea pusha se %ebp, automatski se pusha %eip, onda se pusha %ebx, pa onda ponovo pushamo
@@ -439,8 +439,8 @@ kao što sami komentar kaže linker skripta tj. kernel.ld postavlja ove STABS si
 u kernel memoriju. Dakle oni su dostupni u memoriji tokom samog izvođenja kernela.
 Na osnovug ovog funkcija debuginfo_eip može direktno pristupiti STABS simbolima
 da mapira eip tj da nađe neophodne podatke koje debuginfo_eip funkcija izdvaja.
-Dakle funkcija debuginfo_eip služi kao što smo rekli da pronađe neophodne i popuni
-strukturu koja ima ove informacije konkretno:
+Dakle funkcija debuginfo_eip služi kao što smo rekli da na osnovu adrese eipa
+pronađe neophodne podatke i popuni strukturu koja ima ove informacije konkretno:
 // Initialize *info
 	info->eip_file = "<unknown>";
 	info->eip_line = 0;
@@ -449,7 +449,7 @@ strukturu koja ima ove informacije konkretno:
 	info->eip_fn_addr = addr;
 	info->eip_fn_narg = 0;
 Funkcija debuginfo_eip ima implementiran algoritam pretraživanja koji pronalazi
-funkciju ili liniju. Moj zadatak je bio da implementiram dio koji pronalazi 
+funkciju, liniju ili fajl. Moj zadatak je bio da implementiram dio koji pronalazi 
 liniju koda na osnovu adrese eip-a. 
 Uradio sam to na sledeći način:
   stab_binsearch(stabs, &lline, &rline, N_SLINE, addr);
