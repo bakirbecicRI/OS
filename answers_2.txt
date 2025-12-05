@@ -1,0 +1,671 @@
+Exercise 7. Use QEMU and GDB to trace into the JOS kernel and stop at the movl %eax, %cr0. 
+Examine memory at 0x00100000 and at 0xf0100000. Now, single step over that instruction 
+using the stepi GDB command. Again, examine memory at 0x00100000 and at 0xf0100000. 
+Make sure you understand what just happened.
+
+What is the first instruction after the new mapping is established that would fail 
+to work properly if the mapping weren't in place? Comment out the movl %eax, %cr0 
+in kern/entry.S, trace into it, and see if you were right.
+
+Kada sam u gdbu došao na instrukciju na adresi 0x1000025 
+mov %eax, %cr0, i kada sam examinao memoriju na adresi od 0x100000 se nalaze kodovi
+nekih instrukcija. Međutim kada sam prešao na adresu od 0xf0100000, gdb šalje poruku
+Cannot access memory at address 0xf0100000. Ali već kada se pređe na sledeću
+instrukciju (sa čime smo efektivno uključuli paging poslije instrukcije 
+movl %eax, %cr0)  i kada izvršimo opet examine memorije sa adrese 0xf0100000 to 
+prolazi bez problema i dobijamo izgled memorije na tim adresama.
+Zašto se to dešava ?
+Razlog je jednostavan, prije uključivanja paging-a visoke virtuelne adrese ne postoje, 
+nakon uključivanja one postoje jer page directory stvara mapiranje virtuelnih adresa na 
+određene fizičke adrese.  Kada obrišemo instrukciju za setovanje paginga i kada pokušamo 
+da izvršimo instrukciju jmp *%eax, gdb prijavljuje grešku "Error while running hook_stop. 
+Ta instrukcija je ključna za tranziciju iz niske fizičke(virtuelno-identity mapirane) 
+adrese u visoku virtualnu adresu i prijavljuje se greška iz razloga što adresa koju tražimo
+cpu očekuje da je mapirana visoko, a bez paginga ta adresa ne postoji. Dakle pokušava se 
+pristupiti adresi koja još nije mapirana.
+
+Znači, nakon izvršavanja seta instrukcija za aktiviranje paginga dobijamo to da 
+adresa 0x100000 i adresa 0xf0100000 gledaju na isto mjesto.
+(gdb) x/8x 0x100000 
+0x100000:       0x1badb002      0x00000000      0xe4524ffe      0x7205c766 
+0x100010:       0x34000004      0x3000b812      0x220f0011      0xc0200fd8 
+(gdb) x/8x 0xf0100000 
+0xf0100000 <_start-268435468>:  0x1badb002      0x00000000      0xe4524ffe	0x7205c766
+0xf0100010 <entry+4>:	0x34000004	0x3000b812	0x220f0011	0xc0200fd8
+Dakle isti raspored memorije. Ovdje vidimo magiju paginga.
+
+Exercise 1.
+
+boot_alloc()
+
+Ovo je funkcija koja je jednostavni alokator memorije koji se koristi samo na početku,
+prije nego što se postavi "pravi" sistem upravljanja memory managementa u mem_init()
+(pravi page alokator sa page_alloc()).
+Onaj dio koji smo trebali dodati u implementaciji je sledeći:
+linijom 
+result = nextfree
+smo inicijalizirali result na adresu prvog slobodnog prostora u kernel memoriji odnosno
+bajta (tip je char). Dakle result označava početak nepopunjenje memorije
+nextfree = ROUNDUP(nextfree+n, PGSIZE)
+Ovdje se adresa pomiče za n bajtova. N  je broj koji je proslijeđen kao argument i 
+predstavlja veličinu zatražene alokacije. Onda tu novu vrijednost alignamo na
+veličinu pagea (4KB).
+Ovaj align je bitan, jer želimo osigurati da nam sledeća alokacija počinje na kraju
+page-a, odnosno početku sledećeg page-a.
+Used i max predstavljaju podatke o ukupnoj iskorištenoj memoriji i maksimalnoj fizičkoj
+memoriji.
+Ove vrijednosti koristimo u if-u u kojem ispitujemo da li nextfree prelazi ukupnu
+raspoloživu memoriju, to znači da kernel pokušava alocirati više memorije od one 
+količine kojom sistem zapravo raspolaže. U tom slučaju baca se panic poruka
+"boot_alloc: out of memory!"
+I na kraju vraćamo početak alociranog bloka memorije.
+
+mem_init()
+
+pages=(struct PageInfo*) boot_alloc(npages*sizeof(struct PageInfo));
+memset(pages, 0, npages*sizeof(struct PageInfo));
+
+U ovom dijelu definišemo strukturu odnosno niz koja će sadržavati podatke o pageovima
+Koristimo boot_alloc da dobili jedan blok memorije u kojem će stati npages struktura
+PageInfo. Vrši se kastiranje u pointer tipa struct PageInfo* i time će pages 
+pokazivati na prvi element niza.
+Memset funkcijom se setuju sve ove strukture na 0. Time dajemo garanciju da nijedan 
+page neće biti korišten tj. bit će inicijalno prazni i označeni kao nezauzeti u 
+tom momentu.
+
+Pages nam predstavlja osnovnu strukturu kernela za praćenje fizičkih stranica.
+Dakle kod pozivanja page_alloca, page_freea itd. kernel koristi ovaj niz za praćenje
+slobodnih i zauzetih stranica.
+
+page_init()
+
+Funkcija koja služi za inicijalizaciju fizičkih stranica i dakle priprema listu 
+slobodnih stranica za kernel. Kernel koristi ovu pripremljenu listu u budućnosti
+kroz funkcije za alokaciju memorije.
+
+pages[0].pp_ref = 1;
+Page 0 tj. prvih 4 KB nije slobodna zbog čuvanja IDT-a i strukture BIOSA.
+Dakle ona se ne smije alocirati. Linijom iznad je označavamo kao zauzetu.
+Automatski dolazimo do zaključka da je NE smijemo dodati u listu slobodnih pageova.
+
+	for (i = 1; i < npages_basemem; i++) {
+		pages[i].pp_ref = 0;
+		pages[i].pp_link = page_free_list;
+		page_free_list = &pages[i];
+	}
+
+Ovaj ovdje dio povezuje pageove u listu slobodnih pageova do 1 MB, tj. taj base
+memory.
+
+  for (i=IOPHYSMEM/PGSIZE; i<EXTPHYSMEM/PGSIZE; i++)
+    pages[i].pp_ref = 1;
+  
+Ovim dijelom tu striktno zabranjujemo pristup određenom dijelu memorije 
+[IOPHYSMEM, EXTPHYSMEM) time što ih označavamo zauzetim. Ovaj dio je neka oblast
+koju koriste ulazno-izlazni uređaji, VGA memorija generalno hardverske uređaje.
+Dakle ove pageove ne dodajemo u "page_free_list".
+
+  physaddr_t ffpa = PADDR(boot_alloc(0));
+  size_t ffp = ffpa / PGSIZE;
+
+  for (i=EXTPHYSMEM/PGSIZE; i<ffp; i++)
+      pages[i].pp_ref = 1;
+
+  for (; i < npages; i++) {
+        pages[i].pp_ref = 0;
+        pages[i].pp_link = page_free_list;
+        page_free_list = &pages[i];
+    }
+
+Posljednji dio ove naše funkcije page_init označava pageove koje koristi kernel
+sa 1. Jasno je da ne smjemo koristiti te pageove da ne bi poremetili kompletan OS.
+U ffpa dobijamo prvu slobodnu adresu, a ffp-om dobijamo broj stranica. Počevši od
+EXTPHYSMEM/PGSIZE indexa pagea pa do ffp indexa označavamo zauzetim. To je efektivno
+onaj dio memorije koju koristi kernel.
+Sve stranice iznad, dakle [ffp, npages) su slobodne i dodajemo ih u listu slobodnih
+stranica "page_free_list".
+
+Rezultat ove funkcije je to što ćemo na kraju dobiti sve fizičke stranice, odnosno 
+frameove inicijalizirane.
+Lista pages[] zna koje su stranice slobodne ili zauzete, a page_free_list sadrži
+sve slobodne stranice koje kernel može alocirati po potrebi.
+
+page_alloc()
+
+struct PageInfo *
+page_alloc(int alloc_flags)
+{
+
+  if (page_free_list == NULL)
+    return NULL;
+	
+  struct PageInfo *res;
+  res = page_free_list;
+  page_free_list = page_free_list->pp_link;
+  res->pp_link = NULL;
+  if (alloc_flags&ALLOC_ZERO)
+    memset(page2kva(res), 0, PGSIZE);
+  return res;
+}
+
+page_alloc je funkcija koja služi da dodijeli jedan slobodan fizički okvir (4 KB) iz
+slobodne liste "page_free_list".
+Prvo, ako je slobodna lista prazna i page_alloc nema stranicu za vratiti onda vraća
+NULL.
+Ako ipak to nije slučaj, onda se deklarira pointer res tipa struct PageInfo. 
+On postaje prva slobodna stranica. Skidamo je sa liste slobodnih i brišemo pp_link
+jer više nije dio te liste.
+Sledeće, imamo ovaj dio sa if-om i ovim ALLOC_ZERO. Dakle bukvalno u funkciji 
+page_alloc() imamo mogućnost da neka nova fizička stranica bude inincijalizirana 
+nulama. AND operacijom provjeravamo da li je postavljen flag za zero alokaciju.
+Ako jeste, stranica se čisti preko memset() poziva, nešto slično kao u mem_init 
+funkciji u kojoj smo niz page structova setovali na nulu. Bitna razlika je to
+što ovdje koristimo funkciju page2kva() koja vrši konverziju ove naše fizičke
+stranice u virtuelnu-adresu. Kernel u ovom trenutku radi sa virtuelnim adresama,
+tako da je ovo neophodno za uraditi. Ova funkcija vraća adresu koju memset setuje 
+nulama. Razlog zbog kojeg se ovo radi bi mogao biti nekakav security check u smislu
+da aplikacija ili ti proces koji je aktivan u tom trenutku ne vidi nekakav neželjeni
+sadržaj posljedicom kernela, tj. da se izbjegnu neke nepredviđene situacije ili ti ga
+neko nepredvidivo ponašanje.
+
+page_free()
+
+void
+page_free(struct PageInfo *pp)
+{
+  if (pp->pp_ref != 0 || pp->pp_link != NULL)
+    panic("page_free: cannot free page");
+  pp->pp_link = page_free_list;
+  page_free_list = pp;
+}
+
+page_free funkcija je jedna od najjednostavnijih do sad za shvatiti i implementirati.
+Ideja je da ona vraća stranicu nazad na slobodnu listu. 
+Dakle stranica se ne smije osloboditi ukoliko važi bilo koji od sledećih uslova:
+Ukoliko ima referenci tj pp_ref = 1 (što efektivno znači da je stranica u trenutnoj
+upotrebi), ako se već nalazi u listi tj. da je pp_link postavljen na NULL.
+Ukoliko to nije slučaj onda radimo ovo ubacivanje stranice natrag u listu slobodnih.
+U suštini radimo push_front po LIFO (LAST IN FIRST OUT) principu.
+
+Ovim funkcijama smo u suštini implementirali frame (physical page) alokator koji JOS
+koristi. Važno je napomenuti da u ovom dijelu, kada smo pričali o pageovima tj. 
+stranicama mislili smo naravno na okvire tj. frameove (fizičke stranice), te pages
+predstavlja varijablu koju ćemo koristiti kao niz podataka o svim okvirima odnosno
+fizičkim stranicama memorije.
+
+Exercise 3.
+
+QEMU monitor nudi posebne tzv. monitor komande. Neke od nama najkorisnijih su 
+xp i x. Komanda xp ispisuje vrijednosti na fizičkoj adresi, a komandom x se ispisuju
+komande na virtuelnoj adresi.
+U suštini koristimo xp kada čitamo sa fizičke adrese.
+Mi znamo da se vrše dva mapiranja kernela u virtuelnoj adresi sa fizičke adrese.
+To znači da bi sa x trebali dobiti sa obje adrese istu stvar, jer faktički
+ta fizička adresa 0x100000 reprezentira virtuelnu adresu, i to isto ono što je
+mapirano i na adresi KERNBASE+1MB.
+To možemo vidjeti iz primjera u QEMU:
+
+x/4x 0x00100000
+00100000: 0x1badb002 0x00000000 0xe4524ffe 0x7205c766
+x/4x 0xF0100000
+f0100000: 0x1badb002 0x00000000 0xe4524ffe 0x7205c766
+
+Dakle u oba slučaja čitamo dvije virtuelne adrese koje se
+mapiraju na istu fizičku.
+
+mystery_t x;
+char* value = return_a_pointer();
+*value = 10;
+x = (mystery_t) value;
+
+Kada se funkcija pozove, očekuje da se vrati pointer tipa char* koji će se spremiti
+u value. U sledećoj liniji se value derefencira i onda se upisuje vrijednost 10.
+Zatim se value kastira sa tipom mystery_t i pohranjuje u x.
+Sa obzirom da vidimo da je pointer ispravan tj. derefenciramo ga i mijenjamo vrijednost,Iz toga očito vidimo da value mora biti važeća virtuelna adresa.
+Znamo da se samo derefenciraju virtuelne adrese jer CPU koristi MMU i ne može direktno
+čitati ili pisati fizičke adrese u RAM-u. Dakle operator * mora biti primjenjen
+sa adresom koja je mapirana u virtuelni adresni prostor.
+Dakle zaključak je da mystery_t mora biti uintptr_t, jer uintptr_t služi za
+pohranjivanje virtuelne adrese. Takođe vidimo kod derefenciranja da prima vrijednost
+tipa integer što takođe odgovara tipu uintptr_t, ne gubimo podatke.
+
+Exercise 4.
+
+pgdir_walk()
+
+pgdir_walk() funkcija je funkcija koja uzima "pgdir", pointer na page directory i
+pomoću njega i ostalih argumenata vraća pointer na page table entry.
+
+pte_t *
+pgdir_walk(pde_t *pgdir, const void *va, int create)
+{
+  
+Na početku inicijaliziramo page table index i page directory index. Ovo će nam biti
+potrebno u narednom kodu zbog provjere indeksiranja i postojanja page tablea.
+
+  uint32_t ptx= PTX(va);
+  pde_t *pde;
+  pde = &pgdir[PDX(va)];
+
+PDX i PTX su makroi koji iz virtualne adrese uzimaju određeni broj bita. Konkretno
+PDX(va) uzima gornjih 10 bita tj. page directory index.
+PTX(va) uzima srednjih 10 bita tj. page table index.
+
+U ovom dijelu ispod ispitujemo da li page table postoji. 
+Ukoliko on ne postoji a create flag je false odnosno nula, onda pgdir_walk 
+vraća NULL. PTE_P znači da page table page postoji u memoriji. Create flag je 
+ključan u ovoj funkciji. On govori da li će se novi page table kreirati ili će se samo
+vratiti NULL. Ukoliko je on nula, ne kreiramo ništa, vraćamo NULL. Ukoliko create
+ima vrijednost različitu od 0, najčešće 1, onda se izvršava kod ispod. Ovdje pgdir_walk
+razlikuje validan i nevalidan entry kao i odluku da li se alocira novi page table ili
+se operacija aborta.
+
+  if((*pde & PTE_P)==0){
+    if (create==0)
+      return NULL;
+
+Ukoliko je create različit od nule, pgdir_walk kreira novi struct tipa pointera 
+strukture PageInfo i u njemu definiramo novi page u koji ćemo spremiti page table 
+sa funkcijom page_alloc i flagom ALLOC_ZERO. ALLOC_ZERO flag nam služi da 
+page table inicijaliziramo nulama, jer svi članovi trebaju biti nekorišteni odnosno
+inicijalizirani nulama u početnom trenutku. Ukoliko alokacija bude tj. boot_alloc vrati
+NULL, gdir_walk vraća NULL. A ako bude uspješno pp_ref count se inkrementira i 
+kreira se page directory entry. Pde se kreira od fizičke adrese ove adrese page-tablea
+i od flagova PTE_W PTE_P i PTE_U (entry je writable, present i u user modeu). 
+Fizičku adresu dobijamo funkcijom page2pa(). pgdir_walk vraća pointer tj. lokaciju
+gdje se nalazi PTE za zadanu virtuelnu adresu pomoću onog ptx indexa definiranog na 
+početku pomoću adrese upravo te virtuelne adrese. PTE_ADDR koristimo da uklonimo
+flagove tj. da dobijemo čistu fizičku adresu a KADDR pretvara adresu u kernel
+virtuelnu adresu dodavanjem KERNBASE-a.
+
+    struct PageInfo *p = page_alloc(ALLOC_ZERO);
+    if (p==NULL)
+      return NULL;
+
+    ++p->pp_ref;
+
+    *pde = page2pa(p) | PTE_W | PTE_P | PTE_U;
+
+  }
+  
+  pte_t *pgtab = (pte_t*)KADDR(PTE_ADDR(*pde));
+  return &pgtab[ptx];
+}
+
+Važno je napomenuti da KADDR radi na principu dodavanja KERNBASE-a na fizičku adresu,
+To znači da je virtuelna adresa u kernel prostoru jednaka fizičkoj adresi + KERNBASE.
+Ovo omogućava kernelu jednostavan pristup fizičkoj memoriji kroz virtuelni
+adresni prostor. KERNBASE offset je ključan u ovim implementacijama.
+
+
+boot_map_region()
+
+static void
+boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
+
+boot_map_region je funkcija koja služi da mapira određeni dat opseg virtualne memorije
+na određeni opseg fizičke memorije. Ovu funkciju koristimo za mapiranje kernel stacka,
+za mapiranje svih pageova (pages) itd.
+
+Funkcija prima pgdir - page directory koji mapiramo, va - početna virtualna adresa 
+koju mapiramo, size - veličina koju mapiramo tj. broj bajta, pa - početna fizička
+adresa koja se mapiram, perm - permissions (PTE_W, PTE_U).
+
+  for (size_t i=0; i<size; i += PGSIZE) {
+
+For petljom mapiramo po jednoj stranici tj. po 4096 bajta. Dakle ovo "i" koje smo 
+inicijalizirali predstavlja offset od početne adrese.
+
+    pte_t *pte = pgdir_walk(pgdir, (void *)va+i, 1);
+
+U ovoj liniji dobijamo pointer na page table entry za aktuelnu adresu va+i. U svakoj
+iteraciji inkrementiramo adresu za i, a i predstavlja increment veličine 4 KB, tj.
+veličine pagea. Vidimo da ovdje prosljeđujemo 1 kao 3. argument, to je onaj create
+koji smo označili sa 1. To znači da ako page table postoji, mora se kreirati.
+
+    if (pte == NULL)
+        panic("boot_map_region: pgdir_walk failed");
+
+Ako nešto pođe po zlu, tj. pgdir_walk ne može vratiti entry, pte će dobiti vrijednost 
+NULL. Ovo se može desiti ako je nestalo memorije. Efektivno je ponestalo fizičkih
+stranica u tom slučaju.
+
+    *pte = (pa+i) | perm | PTE_P;
+
+U posljednjoj liniji mapiramo page table entry i to sa:
+- fizičkom adresom u trenutnoj iteraciji
+- permisijana
+- PTE_P, stranica je present (služi za validaciju ispravno mapirane adrese)
+
+page_insert()
+
+Ova funkcija mapira datu virtuelnu adresu va u frame pp u datom page direktoriju.
+Za ovo su nam potrebni pgdir u kojem mapiramo u relevantni page table, fizička adresa,
+virtuelna adresa koja se mapira zajedno sa sa permisijama definisanim sa perm.
+
+int
+page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
+
+  pte_t *pte = pgdir_walk(pgdir, va, 1);
+
+Pronalazimo page table, ili ga kreiramo ukoliko ne postoji, te vraćamo nazad page table
+entry.
+
+  if (pte == NULL)
+    return -E_NO_MEM;
+
+-E_NO_MEM se vraća ukoliko nema dovoljno memorije za novi page.
+
+  pp->pp_ref++;  
+
+Page-u kojeg koristimo mijenjamo stanje pp_ref
+(reference count-a).
+
+  if (*pte & PTE_P){
+    page_remove(pgdir, va);
+    tlb_invalidate(pgdir, va);
+  }
+
+Ako je PTE već present, tj ako je adresa već mapirana, uklanjamo stari sadržaj
+sa page_remove i pozivamo funkciju tlb_invalidate. Funkcija tlb_invalidate briše
+TLB entry samo ako mijenjamo trenutni adresni prostor. Sa obzirom da mi imamo trenutni
+adresni prostor, uvijek radimo invalidate. Translation Lookaside Buffer je cache
+u procesoru koji pamti određen broj mapiranja virtuelnih adresa u fizičke.
+
+Mapiramo novu stranicu na već poznat način i terminiramo funkciju.
+
+  *pte = page2pa(pp) | perm | PTE_P;
+	return 0;
+
+Prije par dana završavajući pisanje ovih funkcija exercise-a 4., imao sam problem 
+gdje check funkcije nisu prolazile. Provjeravao sam sve edge-caseove svaki if da li
+je sve na svom mjestu, da bi nakon svih tih provjera shvatio da imam grešku upravo 
+u page_insertu.
+pp->pp_ref++ mora ići prije page_remove. U mojoj prvobitnoj implementaciji sam
+inkrementiranje pp_ref-a postavljao na kraj funkcije, nakon provjere i eventualnog
+uklanjanja postojeće stranice. Na prvi pogled ovo izgleda ispravno, jer se pp_ref
+povećava nakon uspješnog mapiranja. Međutim, ovo dovodi do ozbiljnog problema kada
+se ista fizička stranica pp ponovo ubacuje na istu virtuelnu adresu.
+Zašto se ovo dešava ?
+Page_remove poziva page_decref koji smanjuje ovaj pp_ref. Dakle ako je stranica
+u tom trenutku imala pp_ref = 1, poziv page_decref smanjuje i efektivno označava
+stranicu kao slobodnu.
+Dakle kada se mapira ista stranica, ulazi se u if slijedi page_remove, smanjuje se
+pp_ref na 0. Stranica se oslobađa i ide u free_list. Poslije toga mi u suštini
+mapiramo fizičku stranicu koja je slobodna, jer kernel misli da je slobodna, a ja je
+koristim. Što nema nikakve logike, Zato je bitno da ovaj pp_ref ++ bude prije, tako da
+se ništa neće desiti (samo će se inkrementirati na 2 pa spustiti na 1). Ovo je bio
+jednostavan problem ali baš težak za uočiti za mene.
+Dakle page_remove smanjuje refcount i oslobađa stranicu AKO pp_ref postane 0.
+Zbog toga moramo prvo povećati, da pp_ref ne ode na 0.
+
+page_lookup()
+
+page_lookup je funkcija koja pronalazi fizičku stranicu tj. frame koji je mapiran
+na virtuelnu adresu va. 
+
+struct PageInfo *
+page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
+
+U potpisu ove funkcije imamo nešto što nismo vidjeli dosad, a to je ovaj 
+pte_t **pte_store. On nam služi za vraćanje pointera na PTE, ako se to zatraži
+u pozivu.
+
+  pte_t *pte = pgdir_walk(pgdir, va, 0);
+  if (pte == NULL)
+    return NULL;
+
+Ovdje tražimo pte, ali ovog puta sa 0 create flag-om. To znači da ako ne postoji 
+traženi page table, vraćamo NULL, što ima smisla za page lookup.
+
+
+  if (pte_store != NULL)
+    *pte_store = pte;
+
+ukoliko je pte_store označen drugačije nego NULL pohranjujemo pointer page table
+entry-a na ovaj pointer.
+
+  return pa2page(PTE_ADDR(*pte));
+
+Ovom linijom vraćamo page tj. onaj struct PageInfo* za ovaj odgovarajući frame tj.
+fizičku stranicu.
+
+page_remove()
+
+Funkcija koja služi za brisanje virtuelno mapirane adrese odnosno stranice.
+
+void
+page_remove(pde_t *pgdir, void *va)
+
+  pte_t *pte;
+  struct PageInfo *pp = page_lookup(pgdir, va, &pte);
+
+Nalazimo frame u koji je virtuelna adresa mapirana. Ako je pp jednak NULL nekim
+slučajem, onda ne radimo ništa.
+
+  if (pp==NULL)
+    return;
+
+Page oslobađamo sa page_decref.
+
+  page_decref(pp);
+
+Oslobađamo mapiranje stranice u page table entryu.
+
+  *pte = 0;
+
+Pozivamo tlb_invalidate iz istog razloga kao i kod page inserta 
+(mijenjamo adresni prostor).
+  tlb_invalidate(pgdir, va);
+}
+
+Exercise 5.  
+
+Question 2.
+
+U prvom pitanju efektivno tražimo odgovor na pitanje koje od virtualnih adresa su 
+mapirane a koje su prazne odnosno nemapirane. Rješenje koje sam smislio da sebi olakšam
+sliku o ovome zasniva se na implementiranju nove funkcije print_pgdir koja će da 
+ispiše adrese kernel page directory-a, na način da prolazi kroz kompletan page directory 
+i ispisuje informacije o svakom page directory entryu zasebno.
+Implementacija je urađena u kern/pmap.c
+
+Izvršenjem funkcije dobijemo ovakav ispis:
+
+PDE[   0] VA [0x00000000 - 0x003fffff] EMPTY
+.
+.
+.
+PDE[ 955] VA [0xeec00000 - 0xeeffffff] EMPTY
+PDE[ 956] VA [0xef000000 - 0xef3fffff] PT 0x003fd000 | W U P
+PDE[ 957] VA [0xef400000 - 0xef7fffff] PT 0x003fe000 | U P
+PDE[ 958] VA [0xef800000 - 0xefbfffff] EMPTY
+PDE[ 959] VA [0xefc00000 - 0xefffffff] PT 0x003fe000 | W U P  
+PDE[ 960] VA [0xf0000000 - 0xf03fffff] PT 0x003ff000 | W U P
+PDE[ 961] VA [0xf0400000 - 0xf07fffff] PT 0x003fc000 | W U P
+PDE[ 962] VA [0xf0800000 - 0xf0bfffff] PT 0x003fb000 | W U P
+PDE[ 963] VA [0xf0c00000 - 0xf0ffffff] PT 0x003fa000 | W U P
+PDE[ 964] VA [0xf1000000 - 0xf13fffff] PT 0x003f9000 | W U P
+PDE[ 965] VA [0xf1400000 - 0xf17fffff] PT 0x003f8000 | W U P
+PDE[ 966] VA [0xf1800000 - 0xf1bfffff] PT 0x003f7000 | W U P
+PDE[ 967] VA [0xf1c00000 - 0xf1ffffff] PT 0x003f6000 | W U P
+PDE[ 968] VA [0xf2000000 - 0xf23fffff] PT 0x003f5000 | W U P
+PDE[ 969] VA [0xf2400000 - 0xf27fffff] PT 0x003f4000 | W U P
+PDE[ 970] VA [0xf2800000 - 0xf2bfffff] PT 0x003f3000 | W U P
+PDE[ 971] VA [0xf2c00000 - 0xf2ffffff] PT 0x003f2000 | W U P
+PDE[ 972] VA [0xf3000000 - 0xf33fffff] PT 0x003f1000 | W U P
+PDE[ 973] VA [0xf3400000 - 0xf37fffff] PT 0x003f0000 | W U P
+PDE[ 974] VA [0xf3800000 - 0xf3bfffff] PT 0x003ef000 | W U P
+PDE[ 975] VA [0xf3c00000 - 0xf3ffffff] PT 0x003ee000 | W U P
+PDE[ 976] VA [0xf4000000 - 0xf43fffff] PT 0x003ed000 | W U P
+PDE[ 977] VA [0xf4400000 - 0xf47fffff] PT 0x003ec000 | W U P
+PDE[ 978] VA [0xf4800000 - 0xf4bfffff] PT 0x003eb000 | W U P
+PDE[ 979] VA [0xf4c00000 - 0xf4ffffff] PT 0x003ea000 | W U P
+PDE[ 980] VA [0xf5000000 - 0xf53fffff] PT 0x003e9000 | W U P
+PDE[ 981] VA [0xf5400000 - 0xf57fffff] PT 0x003e8000 | W U P
+PDE[ 982] VA [0xf5800000 - 0xf5bfffff] PT 0x003e7000 | W U P
+PDE[ 983] VA [0xf5c00000 - 0xf5ffffff] PT 0x003e6000 | W U P
+PDE[ 984] VA [0xf6000000 - 0xf63fffff] PT 0x003e5000 | W U P
+PDE[ 985] VA [0xf6400000 - 0xf67fffff] PT 0x003e4000 | W U P
+PDE[ 986] VA [0xf6800000 - 0xf6bfffff] PT 0x003e3000 | W U P
+PDE[ 987] VA [0xf6c00000 - 0xf6ffffff] PT 0x003e2000 | W U P
+PDE[ 988] VA [0xf7000000 - 0xf73fffff] PT 0x003e1000 | W U P
+PDE[ 989] VA [0xf7400000 - 0xf77fffff] PT 0x003e0000 | W U P
+PDE[ 990] VA [0xf7800000 - 0xf7bfffff] PT 0x003df000 | W U P
+PDE[ 991] VA [0xf7c00000 - 0xf7ffffff] PT 0x003de000 | W U P
+PDE[ 992] VA [0xf8000000 - 0xf83fffff] PT 0x003dd000 | W U P
+PDE[ 993] VA [0xf8400000 - 0xf87fffff] PT 0x003dc000 | W U P
+PDE[ 994] VA [0xf8800000 - 0xf8bfffff] PT 0x003db000 | W U P
+PDE[ 995] VA [0xf8c00000 - 0xf8ffffff] PT 0x003da000 | W U P
+PDE[ 996] VA [0xf9000000 - 0xf93fffff] PT 0x003d9000 | W U P
+PDE[ 997] VA [0xf9400000 - 0xf97fffff] PT 0x003d8000 | W U P
+PDE[ 998] VA [0xf9800000 - 0xf9bfffff] PT 0x003d7000 | W U P
+PDE[ 999] VA [0xf9c00000 - 0xf9ffffff] PT 0x003d6000 | W U P
+PDE[1000] VA [0xfa000000 - 0xfa3fffff] PT 0x003d5000 | W U P
+PDE[1001] VA [0xfa400000 - 0xfa7fffff] PT 0x003d4000 | W U P
+PDE[1002] VA [0xfa800000 - 0xfabfffff] PT 0x003d3000 | W U P
+PDE[1003] VA [0xfac00000 - 0xfaffffff] PT 0x003d2000 | W U P
+PDE[1004] VA [0xfb000000 - 0xfb3fffff] PT 0x003d1000 | W U P
+PDE[1005] VA [0xfb400000 - 0xfb7fffff] PT 0x003d0000 | W U P
+PDE[1006] VA [0xfb800000 - 0xfbbfffff] PT 0x003cf000 | W U P
+PDE[1007] VA [0xfbc00000 - 0xfbffffff] PT 0x003ce000 | W U P
+PDE[1008] VA [0xfc000000 - 0xfc3fffff] PT 0x003cd000 | W U P
+PDE[1009] VA [0xfc400000 - 0xfc7fffff] PT 0x003cc000 | W U P
+PDE[1010] VA [0xfc800000 - 0xfcbfffff] PT 0x003cb000 | W U P
+PDE[1011] VA [0xfcc00000 - 0xfcffffff] PT 0x003ca000 | W U P
+PDE[1012] VA [0xfd000000 - 0xfd3fffff] PT 0x003c9000 | W U P
+PDE[1013] VA [0xfd400000 - 0xfd7fffff] PT 0x003c8000 | W U P
+PDE[1014] VA [0xfd800000 - 0xfdbfffff] PT 0x003c7000 | W U P
+PDE[1015] VA [0xfdc00000 - 0xfdffffff] PT 0x003c6000 | W U P
+PDE[1016] VA [0xfe000000 - 0xfe3fffff] PT 0x003c5000 | W U P
+PDE[1017] VA [0xfe400000 - 0xfe7fffff] PT 0x003c4000 | W U P
+PDE[1018] VA [0xfe800000 - 0xfebfffff] PT 0x003c3000 | W U P
+PDE[1019] VA [0xfec00000 - 0xfeffffff] PT 0x003c2000 | W U P
+PDE[1020] VA [0xff000000 - 0xff3fffff] PT 0x003c1000 | W U P
+PDE[1021] VA [0xff400000 - 0xff7fffff] PT 0x003c0000 | W U P
+PDE[1022] VA [0xff800000 - 0xffbfffff] PT 0x003bf000 | W U P
+PDE[1023] VA [0xffc00000 - 0xffffffff] PT 0x003be000 | W U P
+
+Kao što vidimo iz ovog ispisa od indexa 0 do 955, page directory je neiskorišten
+tj. onaj P bit je setovan na nulu. Znači da virtuelni adresni prostor za te PDE nije
+upotrebljen. Ako znamo da jedan PDE zauzima 32 bita odnosno 4 bajta, dobijamo
+ukupno 956 x 4 B što je 3824 B. Dakle 3824 bajta page directory tablea ne koristimo
+za mapiranje virtualne memorije.
+Pogledom u inc/memlayout.h vidimo izgled ovog mapiranog dijela odnosno raspored
+po adresama. 
+Od adrese 0xef000000 je mapiran niz npages tipa struct PageInfo.
+(Određen sa UPAGES -> UVPT - PTSIZE = 0xEF400000 - 0x400000 -> 0xEF000000)
+Na adresi 0xef400000 je trenutni page directory (ovaj page directory).
+(PDX(UVPT)) -> UVPT je ULIM - PTSIZE, dakle 0xEF800000 - 0x400000 -> 0xEF400000
+Od adrese 0xefff8000 se mapira bootstack, tačnije 8 pageova kernel stacka.
+0xefff8000 koristi manji dio PD entrya indexa 959.
+0xefff8000 -> (->|1110 1111 11|<-11 1111 1000 0000 0000 0000)
+Znamo da prvih 10 bita određuje index page directory entrya, i stvarno ako ovaj broj
+1110111111 pretvorimo u decimalni, dobijamo 959. 
+Znači kernel stack je pod indexom 959 koji je u rasponu od 0xefc00000 - 0xefffffff.
+I naravno kako je očekivano od 0xf0000000 dobijamo prvi pagetable koji mapira od 
+početka fizičke memorije pa sve do 0xffc00000 gdje dobijamo zadnji page table za 
+zadnja 4 MB fizičke memorije, koliko može stati do adrese 0xffffffff.
+Iz ispisa ove funkcije iznad, jasno vidimo koji PDE je vezan za koji PTE, a od 
+indexa 960 pa do indexa 1023 imamo kontinualan niz gdje svaki PDE mapira svoj zasebni 
+page table. Adrese page tableova se inkrementiraju sa po 0x1000 (4KB), za svaki novi 
+PDE, što je logično jer svaki page table pokriva 4MB virtuelnog prostora (1024 
+stranice po 4 KB).
+
+Dakle na kraju dobijamo nešto ovako:
+
++-------+----------------------------+----------------+-------+
+| PDE   | VA Range                   | Page Table     | Flags |
++-------+----------------------------+----------------+-------+
+| 956   | 0xef000000 - 0xef3fffff    | 0x003fd000     | W U P |  # npages(frameovi)
+| 957   | 0xef400000 - 0xef7fffff    | 0x003fe000     | U P   |  # current page directory
+| 959   | 0xefc00000 - 0xefffffff    | 0x003fe000     | W U P |  # bootstack
+| 960   | 0xf0000000 - 0xf03fffff    | 0x003ff000     | W U P |  # Početak, prvi pagetable fizičke memorije od KERNBASE
+| ...   |     ...    -     ...       |     ...        |  ...  |
+| 1023  | 0xffc00000 - 0xffffffff    | 0x003d0000     | W U P |  # Zadnji pagetable (4MB) fizičke memorije
++-------+----------------------------+----------------+-------+
+
+Poziv print_pgdir je zakomentarisan u kern/pmap.c na liniji 259 u mem_init funkciji. 
+
+Question 3.
+
+We have placed the kernel and user environment in the same address space. 
+Why will user programs not be able to read or write the kernel's memory? 
+What specific mechanisms protect the kernel memory?
+
+Možemo vidjeti iz prvog pitanja exercise-a 5 da su određeni PDE-ovi označeni sa U 
+flagom. U flag je USER flag kojim MMU dodatno štiti kernel memoriju na način
+ako je označen sa 1 onda je page dostupan user modu, ako je 0 onda je samo dostupan
+kernel modu. Da bi user program mogao pristupiti nekom dijelu memorije U flag i kod
+PDE i kod PTE mora biti 1. To je jedan nivo protekcije implementiran ovom logikom.
+Mehanizam koji štiti kernel memoriju je tzv. koncept protekcije se zasniva i na  
+sledećoj stvari: u code segment cs registrima koji su 16-bitni, mod procesora se 
+određuje sa CPL (Current privilege level). Ukoliko je on 0 procesor je u 
+kernel modu, samim time dozvoljeno je da izvršava nešto po kernel memoriji.
+Ukoliko je ta vrijednost 11 tj. 3, onda je cpu u user modu i spreman je da izvršava
+samo user aplikacije i samo njih, ukoliko ne dođe do prekida, iznimke ili sistemskog
+poziva.
+
+Question 4.
+
+What is the maximum amount of physical memory that this operating system can support? 
+Why?
+
+JOS kernel na 32-bitnom sistemu može adresirati fizičku memoriju do 4 GB. Jasno zbog
+32-bitnih adresa. Kernel mapira samo dio fizičke memorije iznad KERNBASE ( od
+0xF0000000 pa prema gore) u svoj virtuelni prostor. Maksimalna adresa je 0xffffffff.
+Što znači da je virtuelni prostor koji kernel mapira direktno iznad KERNBASE tj. 
+maksimalnu veličinu fizičkog prostora jeste od 0xf0000000 pa do 0xffffffff što je 
+oko 256 MB. Efektivno taj virtuelni prostor je količina fizičkog prostora koja je 
+iskoristiva. U ovoj konfiguraciji je slučaj ovakav, ali tehnički na 4GB fizičke memorije
+OS bi trebao podržati mnogo više.
+
+Question 5.
+
+How much space overhead is there for managing memory, if we actually had the maximum 
+amount of physical memory? How is this overhead broken down?
+
+Iz prošlog pitanje smo zaključili da imamo 256 MB fizičke memorije na raspolaganju.
+Dakle to nam je maksimum.
+Imamo jedan page directory koji ima 1024 polja po 4 bajta tj. 32 bita.
+Dakle tu imamo 4KB. 
+Ako podijelimo 256 MB sa 4 MB dobit ćemo 64. To je broj page tableova koji su nam
+potrebno za mapiranje svih 256 MB fizičke memorije. Svaki page table mapira
+4 MB virtuelnog prostora, a jedan page table zauzima 4KB.
+64*4KB = 256 KB. To je količina memorije potrebna za page tableove.
+Ne zaboravimo da imamo onaj niz pages, to jest niz struktura tipa PageInfo koju
+ima po jednu za svaku fizičku stranicu. Dakle imamo 256 MB i ako podijelimo to
+sa 4 KB (268 435 356 / 4096 = 65536) dobijamo 65536 stranica. Struktura PageInfo
+sadrži dva polja pointer pp_link koji je 32-bitan tj. 4 B i pp_ref koji je tipa
+uint16_t tj. 2 bajta. Ne smijemo zanemariti kompajler koji će alignirati sizeof
+sa 6B na 8B. 8B * 65536 = 512 KB. Znači dobijamo 512 KB potrebno za ove strukture
+za ovaj niz frameova koji sadrže state o svakoj stranici zasebno.
+Na kraju dobijamo 512 KB + 256 KB + 4 KB, gdje dobijamo oko 772 KB overhead memorije.
+
+Question 6.
+
+Revisit the page table setup in kern/entry.S and kern/entrypgdir.c. Immediately 
+after we turn on paging, EIP is still a low number (a little over 1MB). At what 
+point do we transition to running at an EIP above KERNBASE? What makes it possible 
+for us to continue executing at a low EIP between when we enable paging and when we 
+begin running at an EIP above KERNBASE? Why is this transition necessary?
+
+Tranzicija na EIP iznad KERNBASE se dešava na instrukciji jmp *%eax u entry.S. 
+%eip će se pomjeriti sa niske adrese i sledeća instrukcija (u labelu relocated), 
+znači dešava se skok na visoku virtuelnu adresu kernela, ali samo zato što je ta 
+adresa mapirana u page tabeli još prije uključivanja paging-a.
+
+Razlog zašto ovo uspjeva je to što imamo efektivno dvije virtuelne 
+adrese mapiranu na istu fizičku, jedna "niska" za početak izvršavanja i jedna 
+realocirana iznad KERNBASE. Identity map tj. 1 na 1 adresiranje je privremeno i 
+postoji samo zato da CPU može nastaviti izvršavati instrukcije koje se već nalaze
+na niskim adresama dok ne obavimo skok u visoki adresni prostor. Onda nam ova 
+"donja" virtuelna adresa nije potrebna. 
+
+Možemo zaključiti da je dual mapping neophodan kako bi kernel mogao odmah nastaviti 
+izvršavanje nakon što se uključi paging, jer instrukcije prije paging koriste low 
+memory (kod 1MB), a paging već preusmjerava virtuelni prostor iznad KERNBASE. Iz ovoga
+svega zaključujemo da je ova tranzicija neophodna jer bootloader učita kernel u 
+nisku fizičku memoriju, ali kernel treba da radi u visokom virtuelnom adresnom 
+prostoru.
+
