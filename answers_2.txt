@@ -46,6 +46,9 @@ linijom
 result = nextfree
 smo inicijalizirali result na adresu prvog slobodnog prostora u kernel memoriji odnosno
 bajta (tip je char). Dakle result označava početak nepopunjenje memorije
+Ukoliko je n==0, funkcija ne alocira nikakvu memoriju, već samo vrati trenutnu adresu
+nextfree. Primjer, kada pozovemo boot_alloc(0), dobijemo trenutni vrh slobodne memorije
+bez nikakve dodatne alokacije. Ako je n>0 dešava se sledeće:
 nextfree = ROUNDUP(nextfree+n, PGSIZE)
 Ovdje se adresa pomiče za n bajtova. N  je broj koji je proslijeđen kao argument i 
 predstavlja veličinu zatražene alokacije. Onda tu novu vrijednost alignamo na
