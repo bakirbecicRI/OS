@@ -36,10 +36,12 @@ Dakle isti raspored memorije. Ovdje vidimo magiju paginga.
 
 Exercise 1.
 
+------------
 boot_alloc()
+------------
 
 Ovo je funkcija koja je jednostavni alokator memorije koji se koristi samo na početku,
-prije nego što se postavi "pravi" sistem upravljanja memory managementa u mem_init()
+prije nego što se postavi "pravi" sistem memory managementa u mem_init()
 (pravi page alokator sa page_alloc()).
 Onaj dio koji smo trebali dodati u implementaciji je sledeći:
 linijom 
@@ -63,7 +65,9 @@ količine kojom sistem zapravo raspolaže. U tom slučaju baca se panic poruka
 "boot_alloc: out of memory!"
 I na kraju vraćamo početak alociranog bloka memorije.
 
+---------
 mem_init()
+---------
 
 pages=(struct PageInfo*) boot_alloc(npages*sizeof(struct PageInfo));
 memset(pages, 0, npages*sizeof(struct PageInfo));
@@ -80,9 +84,11 @@ Pages nam predstavlja osnovnu strukturu kernela za praćenje fizičkih stranica.
 Dakle kod pozivanja page_alloca, page_freea itd. kernel koristi ovaj niz za praćenje
 slobodnih i zauzetih stranica.
 
+----------
 page_init()
+----------
 
-Funkcija koja služi za inicijalizaciju fizičkih stranica i dakle priprema listu 
+Funkcija koja služi za inicijalizaciju fizičkih stranica i priprema listu 
 slobodnih stranica za kernel. Kernel koristi ovu pripremljenu listu u budućnosti
 kroz funkcije za alokaciju memorije.
 
@@ -133,7 +139,9 @@ frameove inicijalizirane.
 Lista pages[] zna koje su stranice slobodne ili zauzete, a page_free_list sadrži
 sve slobodne stranice koje kernel može alocirati po potrebi.
 
+------------
 page_alloc()
+------------
 
 struct PageInfo *
 page_alloc(int alloc_flags)
@@ -159,7 +167,7 @@ Ako ipak to nije slučaj, onda se deklarira pointer res tipa struct PageInfo.
 On postaje prva slobodna stranica. Skidamo je sa liste slobodnih i brišemo pp_link
 jer više nije dio te liste.
 Sledeće, imamo ovaj dio sa if-om i ovim ALLOC_ZERO. Dakle bukvalno u funkciji 
-page_alloc() imamo mogućnost da neka nova fizička stranica bude inincijalizirana 
+page_alloc() imamo mogućnost da neka nova fizička stranica bude inicijalizirana 
 nulama. AND operacijom provjeravamo da li je postavljen flag za zero alokaciju.
 Ako jeste, stranica se čisti preko memset() poziva, nešto slično kao u mem_init 
 funkciji u kojoj smo niz page structova setovali na nulu. Bitna razlika je to
@@ -171,7 +179,9 @@ da aplikacija ili ti proces koji je aktivan u tom trenutku ne vidi nekakav neže
 sadržaj posljedicom kernela, tj. da se izbjegnu neke nepredviđene situacije ili ti ga
 neko nepredvidivo ponašanje.
 
+-----------
 page_free()
+-----------
 
 void
 page_free(struct PageInfo *pp)
@@ -224,8 +234,10 @@ x = (mystery_t) value;
 Kada se funkcija pozove, očekuje da se vrati pointer tipa char* koji će se spremiti
 u value. U sledećoj liniji se value derefencira i onda se upisuje vrijednost 10.
 Zatim se value kastira sa tipom mystery_t i pohranjuje u x.
-Sa obzirom da vidimo da je pointer ispravan tj. derefenciramo ga i mijenjamo vrijednost,Iz toga očito vidimo da value mora biti važeća virtuelna adresa.
-Znamo da se samo derefenciraju virtuelne adrese jer CPU koristi MMU i ne može direktno
+Sa obzirom da vidimo da je pointer ispravan tj. derefenciramo ga i mijenjamo vrijednost, 
+iz toga očito vidimo da value mora biti važeća virtuelna adresa.
+Znamo da se samo derefenciraju virtuelne adrese tj. da one koriste pointere 
+jer CPU koristi MMU i ne može direktno
 čitati ili pisati fizičke adrese u RAM-u. Dakle operator * mora biti primjenjen
 sa adresom koja je mapirana u virtuelni adresni prostor.
 Dakle zaključak je da mystery_t mora biti uintptr_t, jer uintptr_t služi za
@@ -234,7 +246,9 @@ tipa integer što takođe odgovara tipu uintptr_t, ne gubimo podatke.
 
 Exercise 4.
 
+-----------
 pgdir_walk()
+-----------
 
 pgdir_walk() funkcija je funkcija koja uzima "pgdir", pointer na page directory i
 pomoću njega i ostalih argumenata vraća pointer na page table entry.
@@ -259,7 +273,7 @@ Ukoliko on ne postoji a create flag je false odnosno nula, onda pgdir_walk
 vraća NULL. PTE_P znači da page table page postoji u memoriji. Create flag je 
 ključan u ovoj funkciji. On govori da li će se novi page table kreirati ili će se samo
 vratiti NULL. Ukoliko je on nula, ne kreiramo ništa, vraćamo NULL. Ukoliko create
-ima vrijednost različitu od 0, najčešće 1, onda se izvršava kod ispod. Ovdje pgdir_walk
+ima vrijednost različitu od 0, trebalo bi biti 1, onda se izvršava kod ispod. Ovdje pgdir_walk
 razlikuje validan i nevalidan entry kao i odluku da li se alocira novi page table ili
 se operacija aborta.
 
@@ -270,8 +284,8 @@ se operacija aborta.
 Ukoliko je create različit od nule, pgdir_walk kreira novi struct tipa pointera 
 strukture PageInfo i u njemu definiramo novi page u koji ćemo spremiti page table 
 sa funkcijom page_alloc i flagom ALLOC_ZERO. ALLOC_ZERO flag nam služi da 
-page table inicijaliziramo nulama, jer svi članovi trebaju biti nekorišteni odnosno
-inicijalizirani nulama u početnom trenutku. Ukoliko alokacija bude tj. boot_alloc vrati
+page table inicijaliziramo nulama, jer sva polja trebaju biti nekorištena odnosno
+inicijalizirana nulama u početnom trenutku. Ukoliko alokacija bude tj. boot_alloc vrati
 NULL, gdir_walk vraća NULL. A ako bude uspješno pp_ref count se inkrementira i 
 kreira se page directory entry. Pde se kreira od fizičke adrese ove adrese page-tablea
 i od flagova PTE_W PTE_P i PTE_U (entry je writable, present i u user modeu). 
@@ -300,8 +314,9 @@ To znači da je virtuelna adresa u kernel prostoru jednaka fizičkoj adresi + KE
 Ovo omogućava kernelu jednostavan pristup fizičkoj memoriji kroz virtuelni
 adresni prostor. KERNBASE offset je ključan u ovim implementacijama.
 
-
+-----------------
 boot_map_region()
+-----------------
 
 static void
 boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
@@ -330,7 +345,7 @@ koji smo označili sa 1. To znači da ako page table postoji, mora se kreirati.
         panic("boot_map_region: pgdir_walk failed");
 
 Ako nešto pođe po zlu, tj. pgdir_walk ne može vratiti entry, pte će dobiti vrijednost 
-NULL. Ovo se može desiti ako je nestalo memorije. Efektivno je ponestalo fizičkih
+NULL. Ovo se može desiti ako je nestalo memorije. Efektivno ponestalo je fizičkih
 stranica u tom slučaju.
 
     *pte = (pa+i) | perm | PTE_P;
@@ -340,7 +355,9 @@ U posljednjoj liniji mapiramo page table entry i to sa:
 - permisijana
 - PTE_P, stranica je present (služi za validaciju ispravno mapirane adrese)
 
+------------
 page_insert()
+------------
 
 Ova funkcija mapira datu virtuelnu adresu va u frame pp u datom page direktoriju.
 Za ovo su nam potrebni pgdir u kojem mapiramo u relevantni page table, fizička adresa,
@@ -371,7 +388,7 @@ Page-u kojeg koristimo mijenjamo stanje pp_ref
 
 Ako je PTE već present, tj ako je adresa već mapirana, uklanjamo stari sadržaj
 sa page_remove i pozivamo funkciju tlb_invalidate. Funkcija tlb_invalidate briše
-TLB entry samo ako mijenjamo trenutni adresni prostor. Sa obzirom da mi imamo trenutni
+TLB entry samo ako mijenjamo trenutni adresni prostor. Sa obzirom da mi imamo samo trenutni
 adresni prostor, uvijek radimo invalidate. Translation Lookaside Buffer je cache
 u procesoru koji pamti određen broj mapiranja virtuelnih adresa u fizičke.
 
@@ -402,7 +419,9 @@ jednostavan problem ali baš težak za uočiti za mene.
 Dakle page_remove smanjuje refcount i oslobađa stranicu AKO pp_ref postane 0.
 Zbog toga moramo prvo povećati, da pp_ref ne ode na 0.
 
+-------------
 page_lookup()
+-------------
 
 page_lookup je funkcija koja pronalazi fizičku stranicu tj. frame koji je mapiran
 na virtuelnu adresu va. 
@@ -433,7 +452,9 @@ entry-a na ovaj pointer.
 Ovom linijom vraćamo page tj. onaj struct PageInfo* za ovaj odgovarajući frame tj.
 fizičku stranicu.
 
+-------------
 page_remove()
+-------------
 
 Funkcija koja služi za brisanje virtuelno mapirane adrese odnosno stranice.
 
@@ -471,7 +492,7 @@ mapirane a koje su prazne odnosno nemapirane. Rješenje koje sam smislio da sebi
 sliku o ovome zasniva se na implementiranju nove funkcije print_pgdir koja će da 
 ispiše adrese kernel page directory-a, na način da prolazi kroz kompletan page directory 
 i ispisuje informacije o svakom page directory entryu zasebno.
-Implementacija je urađena u kern/pmap.c
+Implementacija je urađena u kern/pmap.c.
 
 Izvršenjem funkcije dobijemo ovakav ispis:
 
@@ -580,12 +601,15 @@ Dakle na kraju dobijamo nešto ovako:
 +-------+----------------------------+----------------+-------+
 | PDE   | VA Range                   | Page Table     | Flags |
 +-------+----------------------------+----------------+-------+
-| 956   | 0xef000000 - 0xef3fffff    | 0x003fd000     | W U P |  # npages(frameovi)
-| 957   | 0xef400000 - 0xef7fffff    | 0x003fe000     | U P   |  # current page directory
-| 959   | 0xefc00000 - 0xefffffff    | 0x003fe000     | W U P |  # bootstack
-| 960   | 0xf0000000 - 0xf03fffff    | 0x003ff000     | W U P |  # Početak, prvi pagetable fizičke memorije od KERNBASE
-| ...   |     ...    -     ...       |     ...        |  ...  |
-| 1023  | 0xffc00000 - 0xffffffff    | 0x003d0000     | W U P |  # Zadnji pagetable (4MB) fizičke memorije
+|  0    | 0x00000000 - 0x003fffff    |      |||       |  |||  |  # empty (P bit 0)
+| ...   |     ...    -     ...       |      ...       |  ...  |
+| 955   | 0xeec00000 - 0xeeffffff    |      |||       |  |||  |  # empty (P bit 0)
+| 956   | 0xef000000 - 0xef3fffff    |   0x003fd000   | W U P |  # npages(physical page state array)
+| 957   | 0xef400000 - 0xef7fffff    |   0x003fe000   | U P   |  # current page directory
+| 959   | 0xefc00000 - 0xefffffff    |   0x003fe000   | W U P |  # bootstack
+| 960   | 0xf0000000 - 0xf03fffff    |   0x003ff000   | W U P |  # Početak, prvi pagetable fizičke memorije od KERNBASE
+| ...   |     ...    -     ...       |      ...       |  ...  |
+| 1023  | 0xffc00000 - 0xffffffff    |   0x003d0000   | W U P |  # Zadnji pagetable (4MB) fizičke memorije
 +-------+----------------------------+----------------+-------+
 
 Poziv print_pgdir je zakomentarisan u kern/pmap.c na liniji 259 u mem_init funkciji. 
