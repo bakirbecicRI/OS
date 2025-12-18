@@ -158,7 +158,6 @@ cga_init(void)
 }
 
 
-
 static void
 cga_putc(int c)
 {
@@ -427,7 +426,15 @@ cons_getc(void)
 	}
 	return 0;
 }
-
+void 
+  cons_putc_color(int c, uint8_t color)
+  {
+    uint16_t val = ((color<<8) | (c & 0xFF));
+    serial_putc((int)val);
+    lpt_putc((int)val);
+    cga_putc((int)val);
+  
+  }
 // output a character to the console
 static void
 cons_putc(int c)

@@ -1,0 +1,473 @@
+Exercise 2.
+Dakle prva instrukcija nakon ljmp instrukcije (koja efektivno prebacuje izvršavanje 
+na novu adresu) je cmpw $0x28, %cs:(%esi), word, jasno zato što smo u REAL mode-u
+registar %esi je na vrijednosti 0, dakle offset je nula pa se porede vrijednosti 0x28 i vrijednost iz %cs*16
+u %cs je vrijednost 61440 sto je 0xF000 množenjem sa 16, dodajemo samo još jednu nulu i dobijamo 0xF0000.
+Sa te adrese se čita vrijednost - 2 bajta odnosno 16-bita vrijednosti i poredi to sa brojem 0x28 
+Ova instrukcija mijenja stanje flagova, ali ne ničega drugog. Popratni efekt ove operacije mi je trenutno malo nejasan,
+ali vjerovatno se sa te adrese čita vrijednost kako bi se ustanovilo da li je BIOS u tom trenutku na pravom mjestu
+Sledeća instrukcija je jne 0x241d0ad, što nam daje do znanja da će se na ovu adresu jumpati odnosno neće, u zavisnosti od 
+rezultata instrukcije iznad. Detaljnije rečeno, CPU će skočiti na ovu adresu ako prethodno izvršeni cmpw nije vratio jednakost tj. ako je ZF = 0 (zeroflag)
+Na ovu se adresu ide ako nešto nije krenulo po planu pri bootu računara, najbolje rečeno
+Sledeća instrukcija je xor %edx,%edx. Setuje registar %edx na nulu, jer će ga BIOS koristiti u budućnosti.
+Sledeća instrukcija je mov %edx, %ss
+Ovom instrukcijom se segmentni registar %ss postavlja na nulu
+Sledećom instrukcijom, mov $0x7000, %sp
+Znači da će u %sp (%sp se koristi jer smo u 16 bitnom modu) postaviti stack pointer na adresu 0x7000
+U suštini vidimo da BIOS radi neke provjere, inicijalizuje segmentni registar i stack pointer, dakle neka priprema za dalji tok procesa boota
+Da napomenemo da je je jedan od glavnih zadataka BIOS-a da prije svega nađe program koji se zove bootloader, učita ga i počne izvršavati njegov kod.
+Dakle, ovo su samo neke pripremne stvari.
+------------------------------------------
+Exercise 3.
+For petlja u main.c kroz svaku iteraciju poziva funkciju readseg koja čita kernel sa diska na odgovarajuću poziciju u memoriji.
+Nakon toga dolazi petlja (while ("pa<end_pa)") koja služi za učitavanje
+kernela sektor po sektor gdje su sektori raspoređeni po 512B. 
+Readsect je funkcija koja služi upravo za učitavanje sektora, potpis je sledeći:
+readsect(void *dst, uint32_t offset)
+prvi argument je adresa gdje će sektor biti učitan u memoriji,
+drugi argument je offset tj. pomoću njega biramo koji sektor sa diska čitamo.
+Unutar nje se poziva funkcija waitdisk(), koja čeka da disk bude spreman za izvršenje čitanja.
+Sledeći izraz koji imamo je:
+outb(0x1F2, 1) direktno korespondira sa instrukcijama
+  mov $0x1, %al
+  mov $0x1f2, %edx
+  out %al, (%dx)
+outb(0x1F3, offset)
+  mov %ecx, %eax
+  mov $0x1f3, %edx
+  out %al, (%dx)
+outb(0x1F4, offset>>8)
+  mov $ecx, %eax
+  mov $0x1f4, %edx
+  shr $0x8, %eax
+  out %al, (%dx)
+outb(0x1F5, offset >> 16)
+  mov %ecx, %eax
+  mov $0x1f5, %edx
+  shr $0x10, %eax
+  out %al, (%dx)
+outb(0x1F6, (offset>>24)
+  mov %ecx, %eax
+  mov $0x1f6, %edx
+  shr $0x18, %eax
+  or $0xffffffe0, %eax
+  out %al, (%dx)
+outb(0x1F7, 0x20)
+  mov $0x20, %al
+  mov $0x1f7, %edx
+  out %al, (%dx)
+Poslije ove instrukcije opet ide poziv waitdisk fj-e (call instrukcija).
+Linija insl(0x1F0, dst, SECTSIZE/4) se interpretira kroz sledeće instrukcije:
+  mov 0x8(%ebp), %edi
+  mov $0x80, %ecx
+  mov $0x1f0, %edx
+  cld
+  repnz insl (%dx), %es:(%edi)
+Na zadnjoj instrukciji gdb "zaglavi".
+Instrukcija insl je instrukcija koja služi za čitanje i pisanje podataka sa I/O portova. I/O port je poseban broj tj. 
+adresa preko koje procesor komunicira sa uređajima kao što su disk, ekran, tastatura itd.
+Ova instrukcija je instrukcija input string long, dakle znači "čitaj podatak od 4 bajta sa I/O porta čiji je broj u registru DX i 
+upiši ga na adresu u memoriji na lokaciji %es:%edi. Dakle zapravo djeluje kao da je zaglavilo, 
+ali ako udarimo dovoljno puta enter vidjet ćemo da ćemo nastaviti dalje.
+U ovom trenutku se čitaju sektori kernela sa diska i kopiraju u memoriji, 
+dakle priprema da se kernel pokrene. Repnz ispred ove instrukcije znači da ponavljamo
+instrukciju, jer učitava po 4 bajta. To omogućava da učitamo cijeli sektor u jednom
+potezu.
+1. At what point does the processor start executing 32-bit code? What exactly causes the switch from 16 to 32-bit mode?
+Procesor u programu bootloader izvršava dio koda u 16-bitnom REAL modeu operacija. u boot.S fajlu imamo set instrukcija koje vrše mijenjanje tačno određenog bita kako
+bi prešli u 32-bit PROTECTED mod operacija:
+movl %cr0, %eax
+orl $CR0_PE_ON, %eax
+movl %eax, %cr0
+Zašto imamo ovaj set instrukcija i zašto kopiramo vrijednosti iz jednog registra u drugi ?
+Ovi procesori su dizajnirani tako da ne dozvoljavaju direktne logičke operacije nad 
+kontrolnim registrima, tako da mi njegov sadržaj premjestimo u %eax registar, te u njemu radimo operaciju or-ovanja
+sa konstantom "$CR0_PE_ON" koja je već definisana da skupa sa OR operacijom promjeni nulti bit tj. PE bit na 1. 
+Onda tu dobijenu vrijednost vraćamo natrag u $cr0, i od ovoga trenutka možemo reći
+da CPU radi u PROTECTED modeu.
+U suštini tranzicija je uzrokovana settovanjem Protection Enable (PE) bita u CR0 registru.
+Nakon što je tranzicija omogućena na adresi 0x7c2d, instrukcija ljmp $0x8, $0x7c32 mijenja %cs registar, 
+postavlja %eip i omogućava da se krenu izvršavati 32-bitne instrukcije.
+Dakle odavde pa nadalje (.code32 direktiva pa nadalje) instrukcije se izvršavaju u 32-bitnom modu.
+2. What is the last instruction of the boot loader executed, and what is the first instruction of the kernel it just loaded?
+Zadnja instrukcija bootloadera je:
+((void (*)(void)) (ELFHDR->e_entry))() -> pointer na funkciju (ne uzima argumente ne 
+vraća argumente), uzima se entry point kernela iz ELF headera.
+7d71: ff 15 18 00 01 00  ||call *0x10018||
+Idemo u entry adresu kernela.
+Prva instrukcija koju kernel izvršava je movw $0x1234, 0x472, jer se nalazi na 
+0xf010000c, entrypoint adresi kernela.
+3. Where is the first instruction of the kernel ?
+Odgovor na ovo pitanje je dat u zadnjoj rečenici prethodnog pitanja, dakle fizička adresa od 1MB + 12 odnosno 0xf010000c
+4. How does the boot loader decide how many sectors it must read in order to fetch the 
+entire kernel from disk? Where does it find this information?
+Bootloader ovu informaciju pronalazi na osnovu ELF headera.
+ELF header je struct koji čuva informacije o ELF fajlu, 
+odnosno programu koji se učitava u memoriju. 
+On sadrži broj i veličinu programskih segmenata ("struct Proghdr"
+u boot/main.c), zatim koliko bajtova svaki segment zauzima u memoriji i na disku
+"p_memsz", "p_filesz". Poslije bootloader zatim prolazi kroz sve program segmente
+i za svaki računua koliko sektora je potrebno čitati sa diska tako što uzme
+offset segmenta i njegovu veličinu. Veličina je veličina sektora (512 bajtova), a sve
+sektore čita pomoću funkcije readseg i readsect funkcije.
+ELF header sadrži informacije kao što su tip podataka sa kojim program radi, tip mašine koju podržava, entry point 
+adresu, broj section headera.
+---------------------------------
+EXERCISE 5.
+Kada sam promjenio adresu dešavalo se neko čudno ponašanje 
+gdje sam išao po instrukcijama i u jednom trenutku sam zapeo
+u poziv jedne te iste funkcije, nisam siguran koje. Ali znam da sam u gdbu bio na
+adresama instrukcija potpuno van opsega bootloadera.
+Kada sam uradio clean ponovo i kada sam postavio adresu za linkanje bootloadera
+na 0x7c00, uradio sam break na adresu, konkretno
+b *0xfe6ce. Jos kernel se skroz učitao, dakle da sam završio na mnogo više od adrese 
+od 1MB. Vjerovatno je to neko nedefinirano ponašanje, ali mnoge stvari "pate" zbog ovoga
+uključujući segmentiranje, bootmain() funkcija, global descriptor tabela i slično.
+U drugom slučaju, kod postavljanja linkane adrese bootloadera na 0x8030, 
+pri izvršavanju koda na instrukciji na adresi 0x7c2d 
+(ljmp $0xb866, $0x88062), poslije izvršavanja ove instrukcije vrati se na prvu instrukciju BIOS-a 
+(cmpw $0x28, %cs:(%esi)). Znači u ovom slučaju, program bootloadera nas je poslao
+natrag na početak biosa. Ovo je prva instrukcija koja će raditi pogrešno ukoliko postavimo bootloader 
+link adresu na nešto drugo.
+-----------------------------------
+EXERCISE 6.
+U prvom slučaju na adresi 0x00100000 u trenutku kada BIOS da pristup bootloaderu
+se ne nalazi ništa, BIOS i bootloader koriste samo low memory ispod 1MB. 
+U drugom slučaju na istoj adresi u trenutku kada bootloader pristupa kernelu, te vrijednosi su drukčije, iz prostog razloga što kernel počinje da se piše u memoriji
+na adresi od 1MB, a mi ispisujemo 8 wordova 
+(koji su po 16 bita u intel notaciji) odnosno prvih 16 bajta od adrese 1MB, dakle vidimo neke vrijednosti tj. binarne kodove instrukcija kernela.
+----------------------------------
+EXERCISE 8.
+U fajlu printfmt.c kojeg poziva printf.c, zamjenio sam 4 linije u 
+case 'o':
+  putch ('X', putdat);
+  putch ('X', putdat);
+  putch ('X', putdat);
+  break;
+sa linijama:
+  num = getuint(&ap, lflag);
+  base = 8;
+  goto number;
+1. Explain the interface between printf.c and console.c. Specifically, what funkction
+does console.c export? How is this function used by printf.c?
+U suštini veza između printf.c i console.c je funkcija cputchar 
+koju eksportuje console.c. Ta funkcija poziva novu
+funkciju cons_putc koja ispisuje character na konzolu tj. ekran. 
+Printf.c uzima funkciju cputchar i koristi je za ispis nakon što je printf dobio string
+kao argument i prolazi kroz njega znak po znak korištenjem adrese tog niza charova.
+2. Explain the following from console.c:
+	if (crt_pos >= CRT_SIZE) {
+               int i;
+               memmove(crt_buf, crt_buf + CRT_COLS, (CRT_SIZE - CRT_COLS) * sizeof(uint16_t));
+               for (i = CRT_SIZE - CRT_COLS; i < CRT_SIZE; i++)
+                       crt_buf[i] = 0x0700 | ' ';
+               crt_pos -= CRT_COLS;
+      				 }
+Ovaj dio koda se brine o tome da ostanemo na ekranu u konzoli, tj da ne odemo nigdje 
+van okvira ekrana. Dakle:
+if (crt_pos >= CRT_SIZE) 
+  ukoliko je pozicija veća ili jednaka ivici trenutnog ekrana konzole, da se uradi 
+  sledeće:
+    inicijalizira se varijabla i 
+    funkcija memmove prima buffer nečeg, pa taj buffer sabran sa kolonama ekrana pretpostavljam, 
+    i kao treći argument prima se razlika sizea i kolona što može dati broj tih kao
+    pozicija na koju možemo upisati neki karakter pomnožen sa word-ovima
+    for petlja unutar ovog if-a "čisti" pozicije ekrana sa praznim karakterom
+    linija crt_pos -= CRT_COLS
+    služi kod scrollanja, prelaska u novi red itd. da bi vratilo poziciju kursora tj. da postavi
+    izgled ekrana na željenu defaultnu poziciju. U suprotnom da nema ovih stvari kada izađemo iz okvira displeja konzole
+    ne bi se ništa ispisivalo.
+3. Trace the execution of the following code step-by-step:
+  int x = 1, y = 3, z = 4;
+  cprintf("x %d, y %x, z %d\n", x, y, z);
+  -In the call to cprintf(), to what does fmt point? To what does ap point?
+fmt je pointer na niz charova, tj. to je prvi argument ove funkcije, 
+a ap je lista argumenata.
+  -List(in order of execution) each call to cons_putc, va_arg, and vcprintf. For 
+  cons_putc, list its argumenet as well. For va_arg, list what ap points to before
+  and after the call. For vcprintf list the values of its two arguments.
+Prvi se poziva vcprintf, onda se iz funkcije getint vraća funkcija
+va_arg, cons_putc se poziva zadnji. 
+cons_putc se poziva zadnji sa int (ascii vrijednošću) karaktera
+Argumenti funkcije vcprintf su fmt i ap (format string i arguments list).
+fmt ima vrijednost tj. pokazuje na "x %d, y %x, z, %d\n", ap pokazuje na listu
+argumenata [1, 3, 4] tj. x, y, z.
+Poslije svakog poziva va_arg se pomiče na sljedeći argument u ovoj listi.
+Vrijednost na koju ap pokazuje prije poziva --> (va_list) 0xf0110fc4 "\001"
+Vrijednost na koju ap pokazuje poslije poziva --> (va_list) 0xf0110fc8 "\003"
+I dalje ap prolazi kroz sve elemente koliko ih ima. Pozivi cons_putc su slijedeći:
+nakon vcprintf ("x %d, y %x, z %d\n", ap)
+fmt = 0xf0101b53
+ap=0xf0110fc4
+cons_putc(120) c=120->'x'
+cons_putc(32) c=32->' '
+va_arg()
+ap=0xf0110fc8 (sada pokazuje na broj 3 iz argumenata)
+cons_putc(49) c=49->'1'
+cons_putc(44) c=44->','
+cons_putc(32) c=32->' '
+cons_putc(121) c=121->'y'
+cons_putc(32) c=32->' '
+va_arg()
+ap=0xf0110fcc (sada pokazuje na broj 4 iz argumenata)
+cons_putc(51) c=51->'3'
+cons_putc(44) c=44->','
+cons_putc(32) c=32->' '
+cons_putc(122) c=122->'z'
+cons_putc(32) c=32->' '
+va_arg()
+ap=0xf0110fd0 (prošli smo kroz argumente)
+cons_putc (52) c=52->'4'
+cons_putc (10) c=10->'\n'
+4.
+  unsigned int i = 0x00646c72;
+  cprintf("H%x Wo%s", 57616, &i);
+  What is the output? Explain how this output is arrived at in the step-by-step manner
+Idemo detaljno step by step da objasnimo ovaj proces
+Poslije ove linije gore fmt (format string) ima niz charova gore navedeni i još
+dva argumenta broj 57616 i adresu i. Funkcija cprintf je wrapper oko vcprintf()
+U ovom procesu prvo se poziva va_start koji ima sledeći potpis va_start(ap,fmt),
+ovo postavlja ap da pokazuje na prvi argument u nizu tj. na stacku u nizu. vcprintf
+se poziva sa argumentima fmt i ap. Na ovom mjestu počinje parsiranje fmt-a. Kada
+uđemo u vcprintf, poziva se funkcija vprintfmt koja ima više argumenata. 
+Potpis je
+sledeći:
+vprintfmt((void*)putch, &cnt, fmt, ap)
+Putch je funkcija koja karakter po karakter šalje na kernel konzolu (sa funkcijom
+cputchar), cnt broji koliko je karaktera ispisano, fmt je "H%x Wo%s" i ap je pointer
+na prvi argument (57616). Parsiranje formata u vprintfmt se dešava na sledeći način:
+vprintfmt ide karakter po karakter, prvo ispisuje H dakle putch('H', &cnt)
+Zatim naiđe na %x, signal da slijedi hexadecimalni argument, dakle u fajlu
+lib/printfmt.c ulazimo u case 'x':
+num=getuint(&ap, lflag);
+base=16;
+Onda prelazimo na funkciju printnum. Njen potpis je sledeći:
+printnum(putch, putdat, num, base, width, padc);
+getuint uzima prvi argument sa stacka 57616, flag služi da vidimo da li uzimamo
+signed unsigned vrijednost. Funkcija printnum konvertuje broj u heksadecimalnu
+vrijednost, dakle bit će:
+57616 = 0xe110
+putch poziva cputchar za svaki karakter posebno. Rezultat na konzoli: "HE110"
+Format string dalje pokazuje na " Wo%s" naiđe na %s, onda va_arg uzima drugi argument
+tj. adresu i. Funkcija prolazi cijeli string. Varijabla i = 0x00656c72 se interpretira
+kroz pointer na memorijsku lokaciju sa kojeg čitamo vrijednosti tj. karaktere.
+Funkcija vprintfmt čita byte po byte iz memorije na adresi i ispisuje kao ASCII 
+znakove.
+Dakle 0x72 -> r | 0x6c -> l | 0x64 -> d | 0x00 -> \0 (nul terminator)
+Rezultat ispisa %s = "rld"
+Pa na kraju dobijamo
+He110 World.
+Da napomenemo da se kod ispisivanja pojedinačnog karaktera poziva funkcija 
+cga_putc sa argumentom int vrijednosti tj ascii vrijednosti karaktera. U njoj se
+vrši provjera da li je pozicija kursora validna, i ako nije da se čisti video
+buffer koji sam objašnjavao nešto ranije. Kao što sam rekao na osnovu toga je
+osiguran siguran način za prelazak u novi red i čišćenje ekrana.
+U x86 BIG ENDIAN modu, da bi dobili isti rezultat najlakše je da broj 
+0x00646c72
+zapišemo kao
+0x726c6400
+a za %x da bi dobili isti rezultat broj 57616, samo proslijedimo istu vrijednost
+jer se ova vrijednost ne mapira kao varijabla i kojoj se zna adresa, pa se ona čita
+iz memorije. Broj 57616 se direktno prevodi u hex, neovisno o adresi ili rasporedu
+bajtova u memoriji.
+5.
+cprintf("x=%d y=%d", 3) 
+Funkcija cprintf kao prvi argument očekuje fmt (format string).
+U implementaciji ove funkcije očekivana je inicijalizacija varijable ap na način
+va_list ap;
+va_list je tip koji predstavlja pointer kroz listu argumenata koji su proslijeđeni
+funkciji. Ova lista argumenata direktno ovisi od fmt stringa. Zašto je to tako?
+Pa to je tako jer ni na jedan drugi način funkcija ne može znati koliko argumenata
+je poslano, kojeg su tipa niti kojim redoslijedom ih treba čitati.
+Zato, funkcija cprintf ima pomoćnu funkciju printfmt.c koja se nalazi u lib folderu
+u kojoj su definisani svi "caseovi" ovih znakova unutar apostrofa (%d, %s, %o, %x) 
+itd. Oni se kroz ovu funkciju i pomoću funkcija kao što su getuint, getint, va_ar
+formatiraju na određeni način kako bi ispisali ono što želimo na ekranu. Eh sad,
+šta se dešava u našoj datoj situaciji. Format string je napisan na način da očekuje
+dvije vrijednosti odnosno dva argumenta pored fmt-a. Mi smo dali samo jedan.
+Sa obzirom da ni na koji način u ovoj implementaciji nije handleovan exception da bi 
+spriječio cprintf da pristupi nepostojećem argumentu, zbog toga na ovom drugom mjestu
+očekivanog ispisa vrijednosti, ispiše se uvijek nešto. Šta je nešto ? Pa bilo šta što se 
+u tom trenutku nađe u memoriji na adresi sa koje funkcija čita tu vrijednost.
+6.
+Let's say that GCC changed its calling convention so that it pushed arguments on the stack in declaration order, 
+so that the last argument is pushed last. How would you have to change cprintf or its interface so 
+that it would still be possible to pass it a variable number of arguments?
+Argumenti funkcije se po konvenciji pushaju na stack na nacin da posljednji argument bude na vrhu stacka, odnosno
+prvi argument bude zadnji na stacku. Da bi se ovo omogućilo 
+potrebno je promjeniti definiciju va start funkcije, jer ona očekuje argumente kako je definisano po konvenciji, 
+U drugom slučaju, može da se ne koristi ova konvencija ali onda bi se morale napraviti promjene u va_start i va_end
+ili da se nekim drugim pristupom dođe do rješenja.
+Možda bi se sama printf funkcija mogla promjeniti na način da ona 
+zna gdje su argumenti i u kojem su redoslijedu bez va_start i va_end.
+Možda najlakše rješenje bi bilo da se proslijedi dodatni broj argumenata i da se čitaju preko pointera.
+EXERCISE 9.
+na adresi 0xf0100034 instrukcija mov $0xf0110000, %esp
+Efektivno setuje stack pointer na vrlo visoku adresu. 
+dakle gotovo na maksimalnu adresu u adresnom prostoru kernela. To nam omogućava da koristimo stack nesmetano
+u našim programima, a stacku da raste nadole nesmetano.
+Kernel stack se rezerviše sa 8*4096 sto je 32KB prostora. (instrukcije u entry.S)
+Kernel se "širi" na način da programi koriste push i pop instrukcije u zavisnosti od 
+svojih potreba, na taj način stack raste ili opada.
+EBP se inicijalizira na nulu instrukcijom mov 0x0 jer na prvom ulasku u C funkciju
+(i386_init) nastaje prvi realni stack frame, nakon toga svaka funkcija zasebno
+postavlja svoj EBP i stvara lanac stack frameova.
+ESP pokazuje na donji vrh stacka i širi se ka dole. To je razlog zašto se oduzima da bi se širio.
+EXERCISE 10.
+U prvom pozivu test_backtracea pusha se %ebp, automatski se pusha %eip, onda se pusha %ebx, pa onda ponovo pushamo
+%ebx, ovog puta sa vrijednosti 5 (trenutna pozvana vrijednost) pa se pusha adresa koja je pointer 
+na niz charova koju poziva funkcija printf, i pusha se %eax sa vrijednosti 4, koja je takođe argument ove funkcije printf, dakle to je 6 32bitnih vrijednosti.
+Ostali pozivi su identični samo se različite vrijednosti mijenjaju između ovih %ebx i %eax registara.
+Backtrace funkcija služi za praćenje koda kod debuggiranja. Pomoću nje pratimo adrese funkcija i šta svaka
+od njih pusha na stack.
+Ispratimo kod:
+void test_backtrace(int x) { 
+f0100040: 55 push %ebp 
+f0100041: 89 e5 mov %esp,%ebp 
+f0100043: 53 push %ebx 
+f0100044: 83 ec 0c sub $0xc,%esp 
+f0100047: 8b 5d 08 mov 0x8(%ebp),%ebx 
+	cprintf("entering test_backtrace %d\n", x); 
+f010004a: 53 push %ebx 
+f010004b: 68 40 19 10 f0 push $0xf0101940 
+f0100050: e8 6a 09 00 00 call 
+f01009bf 
+<cprintf> 
+	if (x > 0) 
+f0100055: 83 c4 10 add $0x10,%esp 
+f0100058: 85 db test %ebx,%ebx 
+f010005a: 7e 25 jle f0100081 
+<test_backtrace+0x41> 
+	test_backtrace(x-1); 
+f010005c: 83 ec 0c sub $0xc,%esp 
+f010005f: 8d 43 ff lea -0x1(%ebx),%eax 
+f0100062: 50 push %eax 
+f0100063: e8 d8 ff ff ff call f0100040 
+<test_backtrace> 
+f0100068: 83 c4 10 add $0x10,%esp 
+	else 
+		mon_backtrace(0, 0, 0); 
+	cprintf("leaving test_backtrace %d\n", x); 
+f010006b: 83 ec 08 sub $0x8,%esp 
+f010006e: 53 push %ebx 
+f010006f: 68 5c 19 10 f0 push $0xf010195c 
+f0100074: e8 46 09 00 00 call f01009bf 
+<cprintf> 
+}
+Dakle svaki rekurzivni nivo fnkcije test_backtrace inicijalno stavlja na stack 6
+32-bitnih wordova pomoću push instrukcija, čime se čuvaju vrijednosti koje sam već
+naveo. Međutim, moram napomenuti da se nakon povratka iz rekurzije, kada se 
+izvršava cprintf("leaving test_backtrace %d\n", x), još dva dodatna 32-bitna worda
+se direktno pushaju na stack (argzmenti i registri potrebni za ispis), čime se 
+kompletira kompletan stack frame za jedan nivo rekurzije. Dakle inicijalno se 
+pri svakom rekurzivnom pozivu funkcije test_backtrace na stack push-a ukupno 6
+32-bitnih wordova, ali nakon povratka iz rekurzivne funkcije ispod se dodatno izvrše
+još 2 push instrukcije, čime se upotpuni cijeli stack frame.
+Nešto stacka se i ručno rezerviše sa instrukcijama poput sub $0xc, %esp.
+EXERCISE 11.
+Objašnjenje implementacije
+Ova funkcija će nam služiti za ispis adresa ebp, eipa, argumenata, i lokacije u source
+codeu što je dio 12. zadatka. prvo sam definisao varijablu ebp koja će biti korištena
+da čuva trenutnu vrijednost odnosno frame pointera, dakle pokazuje na početak 
+trenutnog stack framea. Pomoću funkcije read_ebp koja se nalazi u lab/inc/x86.h fajlu i efektivno 
+služi da se registar %ebp spremi u varijablu. To radi pomoću funkcije
+asm_volatile. Znači ebp nam služi za praćenje poziva funkcija.
+linija "struct Eipdebuginfo info" je dio koda koji je vezan za 12. zadatak, ali zasada
+ćemo reći da je to dio vezan za ispisivanje informacija o lokaciji u trenutnom kodu i 
+ispisivanju tih informacija. Ispisujemo Stack backtrace sa cprintf-om. For petlja koju
+vidimo ovdje služi nam da prolazimo kroz lanac ovih ebp frame pointera (onoliko koliko ih imamo). 
+Mogli smo ovo uraditi i sa while petljom, ali ovo izgleda malo 
+atraktivnije. Dakle for petlja će izvršavati kod sve dok ebp nije nula, a ebp će se
+kroz svaku iteraciju sa "ebp = *(uint32_t *)(ebp) setovati na prethodni frame. Zašto je to tako, 
+pa zato što svaki stack frame mora da čuva informaciju o prethodnoj lokaciji ebp-a iz prethodnog 
+stack framea. Inspiraciju za ovako napisan kod sam pronašao
+na prezentaciji OS-P1 na stranici 29, gdje jasno vidimo i pričali smo sa profesorom 
+da u svakom stack frameu, adresa instrukcije povratka, dakle adresa koju koristi 
+ret instrukcija, je pohranjena odmah iznad EBP-a. Tako da linija:
+uint32_t eip = *(uint32_t *)(ebp + 4)
+setuje eip na njegovu trenutnu adresu.
+*(uint32_t *) - ovo u suštini kombinuje castiranje i derefenciranje. Dakle dio u 
+zagradi služi da se ovo pretvori u pointer na 32 bitni unsigned integer. Dakle ako
+uradimo + 1 on pomjera za 8 bita tj. bajt. A * izvan zagrade derefencira tj uzima 
+vrijednost na koju pointer pokazuje. Dakle ova linija znači "pročitaj 4 bajta sa 
+adrese ebp+4". cprintf ispisuje ebp i eip pri čemu se koristi format %08x koji kaže
+ispiši u hexadec formatu 8 cifara, vodeće nule. Unutrašnja for petlja služi
+za ispis pet argumenata funkcije sa stacka, odnosno 5 4-bajtnih vrijednosti od eipa
+pa nagore. Dakle od ebp+8, pa tako nagore. Zbog toga je i inicijaliziran na 8, 
+a i+=4, povećava i u svakoj iteraciji za 4 jer je svaka vrijednost 4 bajta. Unutar
+imamo cprintf koji koristi u ispisu ebp+i, dakle ovo i kojim manipulišemo u petlji.
+Onda prelazimo u novi red nakon ispisa adresa i argumenata. Poslije toga pozivamo
+debuginfo_eip(eip, &info), ovo poziva funkciju koja pomoću informacija koje se 
+procesiraju u fajlu kern/kdebug.c pronalazi izvorni source fajl, adresu početka 
+funkcije, ime funkcije, liniju u kodu itd. Zbog toga proslijeđujemo adresu ove naše
+strukture info koja je instanca od Eipdebuginfo, i te informacije se upisuju u 
+ovu strukturu. Posljednji cprintf Služi za ispis naziva fajla, broja linije, ime
+funkcije, ofset unutar funkcije, tj. koliko smo daleko od početka te funkcije.
+Zbog nekog razloga imao sam problem sa formatiranjem ovog ispisa i grade skripta nije
+htjela da prolazi ali sam dodavanjem "%.*s" to riješio. Ali zbog ovog formata 
+morali smo dodati ovaj namelen jer ovaj format očekuje kao prvi argument koliko
+karaktera iz stringa treba ispisati. Ovaj ofset tj. daljinu od početka fje 
+se dobija na način da oduzmemo eip od adrese funkcije, 
+a adresa pokazuje na početak funkcije. 
+EXERCISE 12.
+STABS simboli (__STAB_*) su simboli odnosno bolje možda reći format koji GCC koristi
+kada debugira kod. Oni sadrže podatke o varijablama, fajlovima, linijama, funkcijama
+kroz njihove tipove npr:
+N_FUN -> funkcija
+N_SLINE -> linija koda
+N_SO -> fajl
+itd.
+Ovi tipovi su definirani u lab/inc/stab.h.
+U kernel.ld ovaj dio koda:
+	/* Include debugging information in kernel memory */
+	.stab : {
+		PROVIDE(__STAB_BEGIN__ = .);
+		*(.stab);
+		PROVIDE(__STAB_END__ = .);
+		BYTE(0)		/* Force the linker to allocate space
+				   for this section */
+	}
+
+	.stabstr : {
+		PROVIDE(__STABSTR_BEGIN__ = .);
+		*(.stabstr);
+		PROVIDE(__STABSTR_END__ = .);
+		BYTE(0)		/* Force the linker to allocate space
+				   for this section */
+	}
+kao što sami komentar kaže linker skripta tj. kernel.ld postavlja ove STABS simbole 
+u kernel memoriju. Dakle oni su dostupni u memoriji tokom samog izvođenja kernela.
+Na osnovug ovog funkcija debuginfo_eip može direktno pristupiti STABS simbolima
+da mapira eip tj da nađe neophodne podatke koje debuginfo_eip funkcija izdvaja.
+Dakle funkcija debuginfo_eip služi kao što smo rekli da na osnovu adrese eipa
+pronađe neophodne podatke i popuni strukturu koja ima ove informacije konkretno:
+// Initialize *info
+	info->eip_file = "<unknown>";
+	info->eip_line = 0;
+	info->eip_fn_name = "<unknown>";
+	info->eip_fn_namelen = 9;
+	info->eip_fn_addr = addr;
+	info->eip_fn_narg = 0;
+Funkcija debuginfo_eip ima implementiran algoritam pretraživanja koji pronalazi
+funkciju, liniju ili fajl. Moj zadatak je bio da implementiram dio koji pronalazi 
+liniju koda na osnovu adrese eip-a. 
+Uradio sam to na sledeći način:
+  stab_binsearch(stabs, &lline, &rline, N_SLINE, addr);
+
+  if (lline <= rline) {
+  info->eip_line=stabs[lline].n_desc;
+  }
+  else {
+    return -1;
+  }
+Dakle ukoliko se nađe neki indeks koji odgovara prije indeksa zadnje linije
+zapišimo to u info->eip_line a stabs[lline] pokazuje na liniju koju prati eip a 
+n_desc sadrzi tačan broj linije u fajlu.
+U jednom zapisu kada sam za indeks probao da uzmem rline sam dobio iste vrijednosti
+ne znam ni ja kako, to bi se logično trebalo desiti ukoliko postoji samo jedna linija
+koja pokriva tu adresu. Moguće da je bio neki bug ili slično.
+Komandom:
+gcc -pipe -nostdinc -O2 -fno-builtin -I. -MD -Wall -Wno-format -DJOS_KERNEL -gstabs -c -S kern/init.c
+Dobijemo asembler fajl koji sadrzi instrukcije direktive i između ostalog i 
+STABS debug informacije. Ovaj fajl se koristi u procesuiranju debuginfo_eip funkcije
+i generalno se koriste za backtrace i debug.
