@@ -5,7 +5,6 @@
 #include <inc/trap.h>
 
 
-
 ###################################################################
 # exceptions/interrupts
 ###################################################################
@@ -21,6 +20,9 @@
  * where NAME is the argument passed to TRAPHANDLER.
  */
 #define TRAPHANDLER(name, num)						\
+	.data;                                                          \
+	.long name;                                                     \
+	.text;                                                          \
 	.globl name;		/* define global symbol for 'name' */	\
 	.type name, @function;	/* symbol type is function */		\
 	.align 2;		/* align function definition */		\
@@ -28,11 +30,20 @@
 	pushl $(num);							\
 	jmp _alltraps
 
+/*macro TRAPHANDLER for exercise 4. before challenge is same but without
+.data; \
+.long name; \
+// .text; \
+*/
+
 /* Use TRAPHANDLER_NOEC for traps where the CPU doesn't push an error code.
  * It pushes a 0 in place of the error code, so the trap frame has the same
  * format in either case.
  */
 #define TRAPHANDLER_NOEC(name, num)					\
+	.data;                                                          \
+	.long name;                                                     \
+	.text;                                                          \
 	.globl name;							\
 	.type name, @function;						\
 	.align 2;							\
@@ -40,16 +51,80 @@
 	pushl $0;							\
 	pushl $(num);							\
 	jmp _alltraps
+//exercise 4. before challenge same as TRAPHANDLER
 
-.text
+
+//exercise 4. challenge macro skip
+#define skip  \
+  .data;      \
+    .long 0x0 \
 
 /*
  * Lab 3: Your code here for generating entry points for the different traps.
  */
 
-
+//exercise 4. challenge - trap_handlers array
+.data
+.global trap_handlers
+trap_handlers:
+.text
+TRAPHANDLER_NOEC(t_divide, T_DIVIDE)
+TRAPHANDLER_NOEC(t_debug, T_DEBUG)
+TRAPHANDLER_NOEC(t_nmi, T_NMI)
+TRAPHANDLER_NOEC(t_brkpt, T_BRKPT)
+TRAPHANDLER_NOEC(t_oflow, T_OFLOW)
+TRAPHANDLER_NOEC(t_bound, T_BOUND)
+TRAPHANDLER_NOEC(t_illop, T_ILLOP)
+TRAPHANDLER_NOEC(t_device, T_DEVICE)
+TRAPHANDLER(t_dblflt, T_DBLFLT)
+skip
+TRAPHANDLER(t_tss, T_TSS)
+TRAPHANDLER(t_segnp, T_SEGNP)
+TRAPHANDLER(t_stack, T_STACK)
+TRAPHANDLER(t_gpflt, T_GPFLT)
+TRAPHANDLER(t_pgflt, T_PGFLT)
+skip
+TRAPHANDLER_NOEC(t_fperr, T_FPERR)
+TRAPHANDLER(t_align, T_ALIGN)
+TRAPHANDLER_NOEC(t_mchk, T_MCHK)
+TRAPHANDLER_NOEC(t_simderr, T_SIMDERR)
 
 /*
+exercise 4. before challenge - generating entry points
+TRAPHANDLER_NOEC(t_divide, T_DIVIDE)
+TRAPHANDLER_NOEC(t_debug, T_DEBUG)
+TRAPHANDLER_NOEC(t_nmi, T_NMI)
+TRAPHANDLER_NOEC(t_brkpt, T_BRKPT)
+TRAPHANDLER_NOEC(t_oflow, T_OFLOW)
+TRAPHANDLER_NOEC(t_bound, T_BOUND)
+TRAPHANDLER_NOEC(t_illop, T_ILLOP)
+TRAPHANDLER_NOEC(t_device, T_DEVICE)
+TRAPHANDLER(t_dblflt, T_DBLFLT)
+TRAPHANDLER(t_tss, T_TSS)
+TRAPHANDLER(t_segnp, T_SEGNP)
+TRAPHANDLER(t_stack, T_STACK)
+TRAPHANDLER(t_gpflt, T_GPFLT)
+TRAPHANDLER(t_pgflt, T_PGFLT)
+TRAPHANDLER_NOEC(t_fperr, T_FPERR)
+TRAPHANDLER(t_align, T_ALIGN)
+TRAPHANDLER_NOEC(t_mchk, T_MCHK)
+TRAPHANDLER_NOEC(t_simderr, T_SIMDERR)
+*/
+
+/*
+alltraps same before challenge vs after challenge
  * Lab 3: Your code here for _alltraps
  */
+.text
+
+_alltraps:
+pushl %es;
+pushl %ds;
+pushal;
+movw $GD_KD, %ax;
+movw %ax, %ds
+movw %ax, %es
+pushl %esp
+call trap
+
 
