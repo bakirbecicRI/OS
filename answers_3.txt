@@ -368,8 +368,10 @@ instrukcije. Postavlja se prvenstveno ESP na adresu trenutno aktivnog trap frame
 zatim sa popal se popuju svi general purpose registri i registre %es i %ds, 
 koji se pushaju na trapframe u procesu handleovanja nekog trapa. 
 Poslije toga se preskače 8 bajtova koji su tf_trapno i tf_errcode, zašto se 
-preskaču i zašto je ovo tu, nisam baš siguran. Najbitnija instrukcija u ovom 
-trenutku jeste ovaj iret, jer on potencijalno pravi fault tj. triplefault.
+preskaču i zašto je ovo tu, iz razloga što u definiciji Trapframe strukture imamo 
+trapno i errcode, a da bi stack bio u formatu koji CPU očekuje za povratak u user mode te dvije
+stvari moramo preskočiti. Instrukcija iret služi za povratak iz prekida i vraća CPU u
+stanje u kakvom je bio prije nego što je trap nastao.
 
 Analizirajući kod iz obj/user/hello.asm, programa koji se poziva u init.c, zaključio
 sam sledeće:
@@ -681,7 +683,8 @@ ovog sistema.
 
 Da smo imali jedan handler za sve, unutar tog handlera bismo morali dodatno praviti
 corner case-ove za određene trapove na osnovu njihovog broja, što bi bila dodatna
-komplikacija i efektivno bi morali svest na isto, samo dodatno zakomplikovano.
+komplikacija i efektivno bi morali svest na nekakav sličan sistem, samo vjerovatno 
+dodatno zakomplikovano.
 
 Did you have to do anything to make the user/softint program behave 
 correctly? The grade script expects it to produce a general protection fault (trap 13), 
@@ -704,7 +707,7 @@ U ovom programu imamo instrukciju int $14. $14 bira ulaz 14 u interrupt descript
 tabeli tj. ako pogledamo u inc/trap.h to je page fault. Int instrukcija je instrukcija 
 za generisanje prekida. Kada program izvrši int $n, CPU softverski generiše trap pod brojem n.
 Dakle, ovaj program generiše trap u user režimu rada, za koji je descriptor privilege level 
-IDT-a entry-a neophodan da bude 3. Znači ne dešava se hardverski trap.
+IDT-a entry-a neophodan da bude 3. 
 Zašto je ovo bitno sad ćemo vidjeti.
 
 Kod definisanja TRAPGATE-a za trap number 14 - page fault, on je definisan na sledeći
@@ -719,7 +722,7 @@ Zbog toga se aktivira trap 13 general protection fault, što grade skripta i oč
 Dakle mi nismo morali ništa raditi, ovo je očekivano ponašanje.
 
 U trenutnoj implementaciji nije moguće da instrukcija za softverske prekide generira trap koji
-je očigledno namjenjen samo za hardverske greške (za trapove za koje smo mi odradili SETGATE). 
+je očigledno namjenjen samo za hardverske iznimke (za trapove za koje smo mi odradili SETGATE). 
 Da bismo to uradili morali bi promjeniti DPL polje u IDT entry-u za page fault na 3 i 
 prilagoditi sve ostale popratne stvari uz to. To bi bilo vrlo rizično jer bi user kod mogao direktno
 izazvati trap koji je dizajniran samo za hardverske greške, što bi moglo dovesti do
@@ -728,7 +731,10 @@ nepredvidivog ponašanja.
 Generalno, kernel je dizajniran tako da spriječi user kod da direktno poziva 
 hardverske trapove zbog sigurnosti, tako da ovo nema baš smisla.
 
+---------------------
 Exercise 4. challenge
+---------------------
+
 You probably have a lot of very similar code right now, between the lists of 
 TRAPHANDLER in trapentry.S and their installations in trap.c. Clean this up. 
 Change the macros in trapentry.S to automatically generate a table for trap.c to 
@@ -832,3 +838,19 @@ samo je to sada dosta ljepše i više nije potrebno deklarisati svaku funkciju r
 
 Na kraju se poziva trap_init_percpu koja inicijalizira i učitava TSS i IDT.
 
+Exercise 5.
+
+Dio koda koji smo trebali implementirati u trap_dispatch funkciji je sledeći:
+
+if (tf->tf_trapno == T_PGFLT){
+  page_fault_handler(tf);
+  return;
+  }
+
+tf_trapno je polje unutar struct-a Trapframe u kojem je definisan broj vektora
+trapa. 
+T_PGFLT je vrijednost koja označava page fault exception.
+If-om provjeravamo da li je T_PGFLT broj trenutnog trapa koji se obrađuje.
+Ako jeste trapframe prosljeđujemo u funkciju page_fault_handler().
+Nakon što se page fault obradi, funkcija trap_dispatch se prekida i onda je trap
+već obrađen i ne trebamo dalje prolaziti kroz ostale uslove.
