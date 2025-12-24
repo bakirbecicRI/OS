@@ -84,8 +84,8 @@ Resetuje ID procesa jer inicijaliziramo ove procese, i svaki treba biti na 0,
 da ne prestavlja nijedan proces trenutno, tj. da je trenutni ID nevažeći.
 U env_alloc() funkciji se generiše ID za proces.
 
-env_init_percpu() poziva funkciju koja učitava global descriptor table i segmente
-registre.
+env_init_percpu() poziva funkciju koja učitava global descriptor table i 
+setuje segmentne registre.
 
 Skrećem pažnju na to da ću u svojim budućim odgovorima i objašnjenjima vrlo vjerovatno
 miješati termine "environment" i "proces". Iako su te 2 stvari slične, nisu iste.
@@ -364,12 +364,12 @@ env_pop_tf(struct Trapframe *tf)
 }
 
 Dakle ona preuzima adresu trap framea preko ovog pointera i koristi asemblerske 
-instrukcije. Postavlja se prvenstveno ESP na tu adresu, zatim sa popal se popuju
-svi general purpose registri i registre %es i %ds, koji se pushaju na trapframe, u 
-procesu handleovanja nekog trapa. Poslije toga se preskače 8 bajtova koji su 
-tf_trapno i tf_errcode, zašto se preskaču i zašto je ovo tu, nisam baš siguran.
-Najbitnija instrukcija u ovom trenutku jeste ovaj iret, jer on potencijalno pravi
-fault tj. triplefault.
+instrukcije. Postavlja se prvenstveno ESP na adresu trenutno aktivnog trap framea, 
+zatim sa popal se popuju svi general purpose registri i registre %es i %ds, 
+koji se pushaju na trapframe u procesu handleovanja nekog trapa. 
+Poslije toga se preskače 8 bajtova koji su tf_trapno i tf_errcode, zašto se 
+preskaču i zašto je ovo tu, nisam baš siguran. Najbitnija instrukcija u ovom 
+trenutku jeste ovaj iret, jer on potencijalno pravi fault tj. triplefault.
 
 Analizirajući kod iz obj/user/hello.asm, programa koji se poziva u init.c, zaključio
 sam sledeće:
@@ -423,8 +423,10 @@ U ovom exerciseu, poenta je da implementiramo mehanizam obrade trapova
 u JOS-u. Trap se aktivira pri svakom prelasku iz user moda u kernel
 mod. Dakle jasno je da se to može dešiti u više slučajeva:
 -hardverska iznimka
--prekidi
-itd.
+-sistemski pozivi
+-hardverski prekidi
+
+U exerciseu 4. mi rješavamo sistem handleovanja hardverskih iznimki.
 
 Dakle, cilj je da napravimo entry point za svaki trap. U suštini ono što imamo
 od trapova je u inc/trap.h :
@@ -582,7 +584,7 @@ handleovanje prekida trapom t_divide i descriptor privilege level postavljamo
 0, tj. da kernel može raditi sa ovim IDT entryem.
 Ostali SETGATE-ovi su identični samo koriste druge offsete i indekse za IDT.
 
-trap_init_percpu() postavlja IDT sa asemblesrkom funkcijom lidt i setup-uje Task State
+trap_init_percpu() postavlja IDT sa asemblesrkom funkcijom lidt i podešava Task State
 Segment (TSS).
 
 Ovako to izgleda u trap.c:
@@ -633,6 +635,22 @@ trap_init(void)
 	// Per-CPU setup 
 	trap_init_percpu();
 }
+
+Sada odgovorimo na pitanje exercise-a 4.
+
+"Call trap (can trap ever return ?)"
+
+Kratak odgovor je ne. Obrazloženje zašto je to tako slijedi iz same funkcije trap koja je u kern/trap.c.
+U funkciji trap.c nigdje se ne koristi klasičan return, iz ovog već otprilike vidimo da se ne vraćamo
+u kod odakle je pozvana funkcija trap. Ono što se dešava je sledeće:
+Poziva se env_run, deklaracija env_run-a unutar kern/env.h je sledeća:
+env_run(struct Env *e) __attribute__((noreturn));
+Ovaj attribute govori compileru da funkcija nikada ne vraća kontrolu calleru.
+Dakle iz funkcije trap poziva se env_run koji interno poziva funkciju 
+env_pop_tf koji popuje registre i vraća stanje CPU koje očekuje nakon povratka
+iz kernel moda u user program nakon prekida. Dakle nema potrebe da se vraćamo
+iz funkcije trap, jer se izvršavanje ne treba nastaviti u kernel kodu koji je
+bio potreban za handle prekida.
 
 What is the purpose of having an individual handler function for each 
 exception/interrupt? (i.e., if all exceptions/interrupts were delivered to the 
@@ -812,5 +830,5 @@ samo je to sada dosta ljepše i više nije potrebno deklarisati svaku funkciju r
   trap_init_percpu();
 }
 
-Na kraju loadamo TSS pomoću trap_init_percpu i postavlja IDT.
+Na kraju se poziva trap_init_percpu koja inicijalizira i učitava TSS i IDT.
 
