@@ -59,6 +59,12 @@
   .data;      \
     .long 0x0 \
 
+//exercise 7. tosyscall skip
+#define tosys \
+  .rept 28;       \
+    .long 0x0;    \
+  .endr
+
 /*
  * Lab 3: Your code here for generating entry points for the different traps.
  */
@@ -88,6 +94,9 @@ TRAPHANDLER_NOEC(t_fperr, T_FPERR)
 TRAPHANDLER(t_align, T_ALIGN)
 TRAPHANDLER_NOEC(t_mchk, T_MCHK)
 TRAPHANDLER_NOEC(t_simderr, T_SIMDERR)
+.data
+tosys
+TRAPHANDLER_NOEC(t_syscall, T_SYSCALL)
 
 /*
 exercise 4. before challenge - generating entry points
