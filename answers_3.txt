@@ -9,7 +9,7 @@ U prvom exerciseu trebamo dodati dvije linije u funkciji mem_init:
 
 envs=(struct Env*) boot_alloc(NENV*sizeof(struct Env));
 
-Ovom linijom alociramo niz ovih structova Env, niz koji se koristi da prati
+Ovom linijom alociramo niz structova Env, niz koji se koristi da prati
 procese na našem operativnom sistemu. Svaki element ovog niza je odgovaran za jedan
 proces. Maksimalno ih može biti NENV, što je u inc/env.h 1<<10 = 1024. Dakle maksimalno
 možemo imati 1024 procesa na našem OS-u.
@@ -718,7 +718,7 @@ način:
 	SETGATE(idt[T_PGFLT], 0, GD_KT, &t_pgflt, 0);
 
 Njegov peti argument je 0, a znamo da je peti argument DPL odnosno descriptor privilege
-level, koji je kao što vidimo 0. To znači program ovaj prekid ne može direktno izazvati
+level, koji je kao što vidimo 0. To znači da ovaj prekid ne može direktno izazvati
 neko ko ima privilege level 3. 
 Zbog toga se aktivira trap 13 general protection fault, što grade skripta i očekuje. 
 Dakle mi nismo morali ništa raditi, ovo je očekivano ponašanje.
@@ -1121,7 +1121,7 @@ provjerava da li adresa prelazi granicu korisničkog prostora (ULIM), jer korisn
 procesi ne smiju pristupati kernel memoriji, logično. Za svaku stranicu se 
 pomoću pgdir_walk dobija pointer na page table entry. Zatim se provjerava da li
 je stranica present (PTE_P) i da li ima tražene permisije (perm). Ako neka provjera
-ne uspije, user_mem_check_addr se upisuje prva nevalidna adresa i funkcija vraća
+ne uspije, u user_mem_check_addr se upisuje prva nevalidna adresa i funkcija vraća
 -E_FAULT (negativna vrijednost). Bitno je da u svakom slucaju provjerimo da li je
 addr<va, jer ako jeste vraćamo upravo va, odnosno prvu adresu u opsegu koji
 provjeravamo. Ovaj corner case je bitan za uočiti i implementirati, kako bi kernel
