@@ -1,0 +1,1241 @@
+Exercise 1. 
+Modify mem_init() in kern/pmap.c to allocate and map the envs array. 
+This array consists of exactly NENV instances of the Env structure allocated much 
+like how you allocated the pages array. Also like the pages array, the memory 
+backing envs should also be mapped user read-only at UENVS (defined in inc/memlayout.h) 
+so user processes can read from this array.
+
+U prvom exerciseu trebamo dodati dvije linije u funkciji mem_init:
+
+envs=(struct Env*) boot_alloc(NENV*sizeof(struct Env));
+
+Ovom linijom alociramo niz structova Env, niz koji se koristi da prati
+procese na našem operativnom sistemu. Svaki element ovog niza je odgovaran za jedan
+proces. Maksimalno ih može biti NENV, što je u inc/env.h 1<<10 = 1024. Dakle maksimalno
+možemo imati 1024 procesa na našem OS-u.
+
+boot_map_region(kern_pgdir, UENVS, PTSIZE, PADDR(envs), PTE_U | PTE_P);
+
+Ovom linijom mapiramo virtuelnu adresu našeg niza na fizičkoj adresi (PADDR(envs)).
+Mapiramo ga na lokaciju UENVS koja je adresa UPAGES - PTSIZE. PTSIZE je definisan kao
+PGSIZE * NPTENTRIES što je 4 194 304. Dakle 4 MB niže u odnosu na adresu UPAGES 
+(niza pages-a). Iz ovoga je logično da je veličina mapiranja PTSIZE (4 194 304).
+Ne smijemo pisati, te dajemo permisije PTE_U i PTE_P, dakle postavljaju se flagovi
+PRESENT i USER bita.
+
+Exercise 2. 
+In the file env.c, finish coding the following functions:
+
+env_init()
+Initialize all of the Env structures in the envs array and add them to the env_free_list. 
+Also calls env_init_percpu, which configures the segmentation hardware with separate segments 
+for privilege level 0 (kernel) and privilege level 3 (user).
+env_setup_vm()
+Allocate a page directory for a new environment and initialize the kernel portion 
+of the new environment's address space.
+region_alloc()
+Allocates and maps physical memory for an environment
+load_icode()
+You will need to parse an ELF binary image, much like the boot loader already does, and load its 
+contents into the user address space of a new environment.
+env_create()
+Allocate an environment with env_alloc and call load_icode to load an ELF binary into it.
+env_run()
+Start a given environment running in user mode.
+As you write these functions, you might find the new cprintf verb %e useful -- 
+it prints a description corresponding to an error code. For example,
+
+	r = -E_NO_MEM;
+	panic("env_alloc: %e", r);
+will panic with the message "env_alloc: out of memory".
+
+-----------
+env_init()
+-----------
+
+Env_init je funkcija koja inicijalizira niz envs-a (Env structova) i priprema 
+slobodnu listu procesa (env_free_list).
+Ova funkcija se poziva jednom pri pokretanju kernela, kako bi stvorili listu dostupnih
+environment-a za programe korisnika.
+
+Dakle sve radimo jednom for petljom. Kroz for petlju iteriramo na način da krećemo
+od posljednjeg indeksa pa idemo sve do prvog. Razlog zbog kojeg ovo radimo na ovaj
+način je sledeći:
+Praktički, svakim
+
+envs[i].env_link = env_free_list
+env_free_list = &envs[i]
+
+Radimo push_front na ovu listu env_free_list. Da smo išli od prvog indeksa pa do kraja
+dobili bi obrnut redoslijed, a u komentaru exercise-a jasno piše da moramo zadržati
+redoslijed onakav kakav je u envs nizu. Sa obzirom na to, krećemo od posljednjeg 
+elementa i efektivno ćemo odraditi reverse članova u nizu na način koji nama odgovara,
+a to je da lista slobodnih environment-a bude u istom redoslijedu kao niz structova
+Env-ova.
+Prije toga imamo 
+
+envs[i].env_status = ENV_FREE;
+
+Koji postavlja status procesa na slobodan, znači da trenutno nije aktivan tj. zauzet.
+
+envs[i].env_id = 0;
+
+Resetuje ID procesa jer inicijaliziramo ove procese, i svaki treba biti na 0, 
+da ne prestavlja nijedan proces trenutno, tj. da je trenutni ID nevažeći.
+U env_alloc() funkciji se generiše ID za proces.
+
+env_init_percpu() poziva funkciju koja učitava global descriptor table i 
+setuje segmentne registre.
+
+Skrećem pažnju na to da ću u svojim budućim odgovorima i objašnjenjima vrlo vjerovatno
+miješati termine "environment" i "proces". Iako su te 2 stvari slične, nisu iste.
+Pravi proces, tj ono što radimo u xv6, podržava neke stvari koje nemamom u JOS-u, u 
+kojem se environment gleda kao proces ali u nešto jednostavnijem ili edukativnijem
+dizajnu, tako da kažem.
+Dakle, kada kažem proces mislim na environment.
+
+--------------
+env_setup_vm()
+--------------
+
+Ova funkcija priprema virtuelni adresni prostor za proces. U argumentu prima
+proces za koji treba da setujemo memoriju.
+
+Dio koda koji sam trebao dopisat je sledeći:
+
+struct PageInfo* p = NULL;
+
+Ovdje definišemo pointer na struct PageInfo, na koji ćemo da alociramo jednu stranicu
+sa funkcijom page_alloc, implementiranom u labu 2. Ovo će dakle da predstavlja
+fizičku stranicu.
+
+Vrši se provjera
+
+if (!(p = page_alloc(ALLOC_ZERO)))
+  return -E_NO_MEM;
+
+Ovdje se prvo alocira jedna fizička stranica, konkretno za page directory.
+Ako nema slobodne memorije tj. alokacija nije uspjela vraća se -E_NO_MEM.
+
+p->pp_ref++;
+
+Povećava reference count na toj fizičkoj stranici, u ovom slučaju 
+stranici page directory-a.
+Potrebno je zbog toga što env_free funkcija može potencijalno da oslobodi stranicu
+dok je idalje koristimo.
+
+e->env_pgdir = (pde_t*)page2kva(p);
+
+Iz structa environmenta uzimamo env_pgdir i postavljamo ga na kernel virtuelnu 
+adresu (fizička adresa sabrana sa KERNBASE) prethodno alocirane stranice.
+
+memcpy(e->env_pgdir, kern_pgdir, PGSIZE);
+
+Funkcija memcpy iz lib/string.c nam je u ovom slučaju korisna jer kopiramo cijeli 
+kernel page directory u novu stranicu. Ovime dobijamo da ovaj proces dobija identičan 
+kernel raspored, što moramo ispuniti u ovom slučaju.
+
+Umjesto memcpy-a sam eventualno imao na umu dvije for petlje kojima bi kopirao
+kernel dio adresnog prostora (sve iznad UTOP) iz kern_pgdir u env_pgdir, tako da svi
+procesi dijele isto kernel mapiranje, a drugi dio briše user dio adresnog prostora
+(ono ispod UTOP), jer novi proces na početku nema mapiranu memoriju tj. user memoriju.
+
+Dakle, efektivno je isto kao i memcpy, ali ovo je čitljivije i jednostavnije za
+shvatit, samo ime kaže šta se radi.
+
+e->env_pgdir[PDX(UVPT)] = PADDR(e->env_pgdir) | PTE_P | PTE_U;
+
+UVPT je adresa sa kojeg proces može čitati svoj page directory. Pomoću
+makroa PDX dobijamo index page_directory-a u koji upisujemo ovo sa desne strane
+jednakosti.
+Pohranjujemo fizičku adresu page directory procesa, i postavljamo
+permisije, dakle možemo čitati.
+Proces sada može čitati svoj page directory, ali ne mogu pisati (PTE_W nije postavljen).
+
+return 0;
+
+vraćamo nulu ako je sve prošlo kako treba.
+
+--------------
+region_alloc()
+--------------
+
+Ova funkcija služi za alokaciju fizičkih stranica i mapira ih u virtuelni adresni
+prostor procesa. Prima environment tj. proces za koji se mapira memorija, 
+virtuelnu adresu od koje se mapira, te veličinu prostora u koji se mapira.
+
+Počinjemo tako što uzimamo početnu i krajnju adresu do koje mapiramo. 
+
+void *begin = ROUNDDOWN(va, PGSIZE);
+
+Ovdje dobijamo početak sa time što aligniramo na početnu adresu sa ROUNDDOWN.
+
+void *end = ROUNDUP(va + len, PGSIZE);
+
+Ovime dobijamo kraj opsega mapiranja, sa time što aligniramo na krajnju adresu sa
+ROUNDUP i sa va + len dobijamo kraj.
+
+for (void *addr = begin; addr < end; addr += PGSIZE) {
+
+Sa for petljom iteriramo iteriramo kroz sve fizičke stranice u zadatom opsegu 
+
+struct PageInfo *p = page_alloc(ALLOC_ZERO);
+if (!p)
+  panic("region_alloc: page_alloc failed");
+
+U svakoj iteraciji alociramo fizičku stranicu, ako ne uspije alokacija aktivira 
+se panic.
+
+int pa = page_insert(e->env_pgdir, p, addr, PTE_U | PTE_P | PTE_W);
+if (pa!=0)
+  panic("region_alloc: %e", pa);
+
+Mapira fizičku stranicu u virtuelni adresni prostor procesa sa funkcijom page_insert.
+Postavljamo permisije sa user, present i write bitima.
+Ukoliko je pa != 0 tj. ako je page_insert vratio nešto što nije nula. To znači da
+mapiranje nije uspjelo i u tom slučaju aktivira se panic.
+
+
+----------
+load_icode
+----------
+
+load_icode funkcija učitava elf fajl programa koji treba da se izvršava na JOS-u,
+dakle postavlja početnu adresu izvršavanja i omogućava izvršavanje programa.
+Ova funkcija praktički omogućava kernelu da pokrene proces pomoću ELF fajla.
+Prvi argument je environment u čiji adresni prostor se učitava program, a binary
+je pointer na sadržaj programa u suštini.
+
+struct Elf *elfheadr = (struct Elf*) binary;
+
+elfheadr postaje pointer koji pokazuje na početak ELF fajla koji je proslijeđen kroz argument funkcije.
+
+if (elfheadr->e_magic != ELF_MAGIC)
+  panic("load_icode: bad ELF magic");
+
+Provjerava se da li elf fajl ima ispravan magic number, tj. da li je fajl 
+executable. Ako nije, aktivira se panic.
+
+lcr3(PADDR(e->env_pgdir));
+
+Ova linija loada u cr3 registar page directory procesa, tako da sve alokacije idu
+u taj prostor.
+
+
+struct Proghdr *ph = (struct Proghdr*) (binary + elfheadr->e_phoff);
+
+for (int i=0; i<elfheadr->e_phnum; i++, ph++) {
+   if (ph->p_type != ELF_PROG_LOAD)
+     continue;
+
+Ovim tu dijelom dobijamo početak prvog program headera iz elf fajla i onda for
+petljom iteriramo kroz sve program header-e ELF fajla.
+Učitavamo samo one koji su ELF_PROG_LOAD.
+
+  region_alloc(e, (void*)ph->p_va, ph->p_memsz);
+  memcpy((void*)ph->p_va, binary+ph->p_offset, ph->p_filesz);
+  if (ph->p_memsz > ph->p_filesz)
+    memset((void*)(ph->p_va + ph->p_filesz), 0, ph->p_memsz - ph->p_filesz);
+ }
+
+Sa region_alloc funkcijom alociramo memoriju za jedan dio tj. sekciju 
+i poslije sa memcpy funkcijom kopiramo podatke iz ELF-a veličine p_filesz. 
+Ako je segment veći od file sizea, što je u suštini BSS segment, 
+onda se inicijalizuje se nulama sa memset.
+
+  e->env_tf.tf_eip = elfheadr->e_entry;
+
+Ovom linijom postavljamo entry point procesa, adresu od koje će CPU početi izvršavanje
+(setujemo EIP).
+
+  region_alloc(e, (void*)(USTACKTOP-PGSIZE), PGSIZE); 
+
+Alocira se sa region_alloc početni stack veličine jedne stranice na vrhu USTACKTOP.
+
+  lcr3(PADDR(kern_pgdir));
+}
+
+Na kraju vraćamo kernel page directory tj. loadamo ga nazad u cr3 registar da bi 
+kernel mogao nastaviti da radi normalno. Dakle ovo mijenjanje direktorija u cr3
+registru je samo privremeno, dok radimo ovo učitavanje iz ELF fajla. Kao što smo rekli
+neophodno je da koristimo page directory environment-a, jer memcpy i memset kroz MMU
+koristi cr3 registar da zna koji directory da koristi.
+
+----------
+env_create
+----------
+
+Ovu funkciju koristimo pri kreiranju procesa kombinovanjem funkcija env_alloc i 
+load_icode.
+Prvi argument je binary, dakle on pokazuje na ELF header programa, odnosno početak
+ELF fajla u memoriji.
+A drugi argument type određuje kojeg je tipa proces, privilegije i namjenu.
+
+struct Env* en;
+int res;
+res = env_alloc(&en, 0);
+if (res != 0)
+  panic("env_create : %e", res);
+
+Alocira se novi proces sa funkcijom env_alloc koja alocira i inicjalizira novi proces.
+Ako alokacija uspije, efektivno ovaj "en" u kodu možemo modificirati u ovoj funkciji 
+ili bilo kojoj funkciji u kojoj caller pozove env_alloc zbog toga što env_alloc
+prima pointer na pointer, a drugi argument je parent_id procesa.
+Ukoliko nema slobodnih procesa, onda se aktivira panic.
+
+load_icode(en, binary);
+en->env_type=type;
+
+Ukoliko je sve dosad prošlo kako treba učitava se ELF fajl u memoriju novog procesa.
+Postavlja se tip procesa, na dati tip drugog argumenta funkcije.
+
+
+-------
+env_run
+-------
+
+Ovom funkcijom prebacujemo izvršavanje sa trenutnog procesa (curenv) na novi proces
+"e". E je environment koji treba postati aktivan i dobiti kontrolu nad CPU-om.
+
+if (curenv != NULL && curenv->env_status == ENV_RUNNING) {
+    curenv->env_status = ENV_RUNNABLE;
+  }
+
+Ako trenutno aktivan proces radi, postavlja se na ENV_RUNNABLE (da je spreman za
+ponovno izvršavanje).
+
+curenv = e;
+curenv->env_status = ENV_RUNNING;
+curenv->env_runs++;
+
+Postavlja se novi proces kao trenutni, status procesa postaje ENV_RUNNING i
+povećavamo ovaj env run count koji broji koliko je puta proces pokrenut.
+
+lcr3(PADDR(e->env_pgdir));
+
+Ovime aktiviramo adresni prostor novog environmenta, učitavanjem njegovogpage 
+directory-a.
+
+env_pop_tf(&e->env_tf);
+
+Vraća registre iz trapframe-a i ulazi u user mod (instrukcija iret).
+
+panic("env_run not yet implemented");
+Aktivira se panic ako funkcija ne uspije, u suštini nikad se ne bi trebalo dospjeti
+do ove linije u izvršenju programa.
+
+Nakon odrađenog exercise-a 2 i pokretanja qemu-a, mi u suštini prelazimo u user mode.
+U user modu kada dođemo do prvog trapa, on ne može biti obrađen jer interrupt descriptor table
+i trap handleri još nisu postavljeni, što dovodi do triple faulta i resetovanja CPU-a.
+
+Kako tačno dolazi do triple faulta:
+
+Single fault odnosno prvi fault dolazi kada CPU generiše bilo kakav trap, recimo generiše se
+divide error.
+U ovom trenutku mi nismo setovali IDT tj. nismo setovali IDT entry-e, i iz tog razloga
+CPU ne može da obradi prvi fault.
+Nastaje double fault.
+Poslije toga CPU, pokušava da obradi double fault, tražeći indeks 8 u IDT, što je
+trap za double fault (inc/trap.h), ali naravno ni njega ne može pronaći jer 
+IDT entry nisu definisani u tom trenutku.
+Tada nastaje triple fault i CPU se resetuje.
+
+Kada sam debagirao kod iz init.c, problem se pojavljuje kod linije
+
+env_run(&envs[0]);
+
+Tačnije kod pozivajuće funkcije unutar funkcije env_run, a to je funkcija env_pop_tf.
+Funkcija env_pop_tf u JOS-u služi za vraćanje iz kernel moda u user mod tako 
+što "popuje" prethodno sačuvani trap frame. U nastavku možemo vidjeti kako ona 
+izgleda:
+
+void
+env_pop_tf(struct Trapframe *tf)
+{
+	asm volatile(
+		"\tmovl %0,%%esp\n"
+		"\tpopal\n"
+		"\tpopl %%es\n"
+		"\tpopl %%ds\n"
+		"\taddl $0x8,%%esp\n" /* skip tf_trapno and tf_errcode */
+		"\tiret\n"
+		: : "g" (tf) : "memory");
+	panic("iret failed");  /* mostly to placate the compiler */
+}
+
+Dakle ona preuzima adresu trap framea preko ovog pointera i koristi asemblerske 
+instrukcije. Postavlja se prvenstveno ESP na adresu trenutno aktivnog trap framea, 
+zatim sa popal se popuju svi general purpose registri i registre %es i %ds, 
+koji se pushaju na trapframe u procesu handleovanja nekog trapa. 
+Poslije toga se preskače 8 bajtova koji su tf_trapno i tf_errcode, zašto se 
+preskaču i zašto je ovo tu, iz razloga što u definiciji Trapframe strukture imamo 
+trapno i errcode, a da bi stack bio u formatu koji CPU očekuje za povratak u user mode te dvije
+stvari moramo preskočiti. Instrukcija iret služi za povratak iz prekida i vraća CPU u
+stanje u kakvom je bio prije nego što je trap nastao.
+
+Analizirajući kod iz obj/user/hello.asm, programa koji se poziva u init.c, zaključio
+sam sledeće:
+kada JOS pokrene program hello, koji se pokreće u init.c, on poziva funkciju
+sys_cputs, koja se koristi da bi se generisao sistemski poziv zbog upisa teksta na
+ekran. To se obezbjeđuje sa instrukcijom int $0x30. Sa obzirom da nemamo definisan
+nikakav vid sistemskih poziva, generira se general protection fault. 
+Kakve to veze ima sa funkcijom env_pop_tf ?
+
+Pa funkcija env_pop_tf je upravo ta koja pokušava da vrati kontrolu iz kernel moda u
+user mod postavljanjem registara i izvršavanjem instrukcije iret. Kada se user
+program hello pokrene u env_run, kernel pripremi trap frame za taj proces i pozove
+env_pop_tf da popuje taj frame.
+
+Međutim, u trenutku kada proces pozove sys_cputs i izvrši int $0x30, CPU generiše
+softverski prekid int 0x30. Pošto u IDT-u još nema definisanog entry-a za taj prekid,
+iret iz env_pop_tf pokušava da nastavi izvršavanje, ali prvi (single fault) ne može
+biti obrađen. Na osnovu objašnjenog iznad dolazi do triple faulta i restartovanja
+sistema.
+
+Dakle, env_pop_tf je direktno povezan sa problemom jer on preuzima kontrolu
+korisničkog procesa i izvršava vraćanje kada prekid može nastati.
+Drugim riječima, problem nije u samom env_pop_tf već u kombinaciji netretiranog trapa,
+dobijamo problem.
+
+Problem se riješava implementacijom exercise-a 4.
+
+Exercise 4. Edit trapentry.S and trap.c and implement the features described above. 
+The macros TRAPHANDLER and TRAPHANDLER_NOEC in trapentry.S should help you, as well 
+as the T_* defines in inc/trap.h. You will need to add an entry point in trapentry.S 
+(using those macros) for each trap defined in inc/trap.h, and you'll have to provide 
+_alltraps which the TRAPHANDLER macros refer to. You will also need to modify 
+trap_init() to initialize the idt to point to each of these entry points defined 
+in trapentry.S; the SETGATE macro will be helpful here.
+
+Your _alltraps should:
+
+push values to make the stack look like a struct Trapframe
+load GD_KD into %ds and %es
+pushl %esp to pass a pointer to the Trapframe as an argument to trap()
+call trap (can trap ever return?)
+Consider using the pushal instruction; it fits nicely with the layout of the 
+struct Trapframe.
+
+Test your trap handling code using some of the test programs in the user directory
+that cause exceptions before making any system calls, such as user/divzero. You 
+should be able to get make grade to succeed on the divzero, softint, and badsegment 
+tests at this point.
+
+U ovom exerciseu, poenta je da implementiramo mehanizam obrade trapova
+u JOS-u. Trap se aktivira pri svakom prelasku iz user moda u kernel
+mod. Dakle jasno je da se to može dešiti u više slučajeva:
+-hardverska iznimka
+-sistemski pozivi
+-hardverski prekidi
+
+U exerciseu 4. mi rješavamo sistem handleovanja hardverskih iznimki.
+
+Dakle, cilj je da napravimo entry point za svaki trap. U suštini ono što imamo
+od trapova je u inc/trap.h :
+
+// Trap numbers
+// These are processor defined:
+#define T_DIVIDE     0		// divide error
+#define T_DEBUG      1		// debug exception
+#define T_NMI        2		// non-maskable interrupt
+#define T_BRKPT      3		// breakpoint
+#define T_OFLOW      4		// overflow
+#define T_BOUND      5		// bounds check
+#define T_ILLOP      6		// illegal opcode
+#define T_DEVICE     7		// device not available
+#define T_DBLFLT     8		// double fault
+/* #define T_COPROC  9 */	// reserved (not generated by recent processors)
+#define T_TSS       10		// invalid task switch segment
+#define T_SEGNP     11		// segment not present
+#define T_STACK     12		// stack exception
+#define T_GPFLT     13		// general protection fault
+#define T_PGFLT     14		// page fault
+/* #define T_RES    15 */	// reserved
+#define T_FPERR     16		// floating point error
+#define T_ALIGN     17		// aligment check
+#define T_MCHK      18		// machine check
+#define T_SIMDERR   19		// SIMD floating point error
+
+Ovo što vidimo ovdje su indeksi, pomoću kojih ćemo da pronalazimo odgovarajuće trapove
+u interrupt descriptor table-u.
+
+Kao što piše u postavci zadatka, od koristi nam mogu biti funkcije TRAPHANDLER i
+TRAPHANDLER_NOEC pri modifikaciji trapentry.s fajla.
+Pa pogledajmo šta one rade.
+
+#define TRAPHANDLER(name, num)						\
+	.globl name;		/* define global symbol for 'name' */	\
+	.type name, @function;	/* symbol type is function */		\
+	.align 2;		/* align function definition */		\
+	name:			/* function starts here */		\
+	pushl $(num);							\
+	jmp _alltraps
+
+#define TRAPHANDLER_NOEC(name, num)					\
+	.globl name;							\
+	.type name, @function;						\
+	.align 2;							\
+	name:								\
+	pushl $0;							\
+	pushl $(num);							\
+	jmp _alltraps
+
+TRAPHANDLER_NOEC i TRAPHANDLER su makroi koji služe da generišu asemblerske entry 
+pointe za svaki trap, koji na stack stavljaju number i error code (po potrebi), te 
+prelaze na alltraps koji radi stvar koju ćemo objasniti kasnije.
+Razlog iz kojeg imamo ova dva tipa trap-a je jednostavan. Neki trapovi pushaju
+error code, a neki jednostavno ne pushaju. Npr imamo trap koji vec ima error code
+npr. page fault. Za njega moramo koristiti TRAPHANDLER makro.
+
+Dakle TRAPHANDLER makro koristimo za trapove koji imaju error code. Znači izvršava se
+pushl $(num)
+jmp _alltraps
+
+Razlika kod TRAPHANDLER_NOEC je ta što njega koristimo za trapove bez error code-a.
+Vidimo uočljivu razliku, a to je da u TRAPHANDLER_NOEC imamo pushl $0. Ta instrukcija
+efektivno postavlja lažni error code i time dobijamo isti format stacka kao i kod trapova
+sa error code-om. Format stacka je bitan tj. da bude identičan radi konvencije i
+lakše obrade koda.
+
+_alltraps ćemo obraditi poslije sledećeg dijela
+
+/*
+ * Lab 3: Your code here for generating entry points for the different traps.
+ */
+
+TRAPHANDLER_NOEC(t_divide, T_DIVIDE)
+TRAPHANDLER_NOEC(t_debug, T_DEBUG)
+TRAPHANDLER_NOEC(t_nmi, T_NMI)
+TRAPHANDLER_NOEC(t_brkpt, T_BRKPT)
+TRAPHANDLER_NOEC(t_oflow, T_OFLOW)
+TRAPHANDLER_NOEC(t_bound, T_BOUND)
+TRAPHANDLER_NOEC(t_illop, T_ILLOP)
+TRAPHANDLER_NOEC(t_device, T_DEVICE)
+TRAPHANDLER(t_dblflt, T_DBLFLT)
+TRAPHANDLER(t_tss, T_TSS)
+TRAPHANDLER(t_segnp, T_SEGNP)
+TRAPHANDLER(t_stack, T_STACK)
+TRAPHANDLER(t_gpflt, T_GPFLT)
+TRAPHANDLER(t_pgflt, T_PGFLT)
+TRAPHANDLER_NOEC(t_fperr, T_FPERR)
+TRAPHANDLER(t_align, T_ALIGN)
+TRAPHANDLER_NOEC(t_mchk, T_MCHK)
+TRAPHANDLER_NOEC(t_simderr, T_SIMDERR)
+
+U ovom tu dijelu definišemo jednu po jednu labelu za svaki trap iz inc/trap.h
+Svaki label:
+-pusha error code (real ili fake)
+-pusha trap number
+-skače na _alltraps
+
+CPU ovime dobija entry point za svaki trap zasebno.
+
+/*
+ * Lab 3: Your code here for _alltraps
+ */
+
+_alltraps:
+pushl %es;
+pushl %ds;
+pushal;
+movw $GD_KD, %ax;
+movw %ax, %ds
+movw %ax, %es
+pushl %esp
+call trap
+
+_alltraps je najbitniji dio ovog cijelog mehanizma. Njime osiguravamo ispravnost
+toka programa i čuvanja prezerviranih registara. Prvenstevno se pusha %es i %ds
+iz razloga što se oni ne pushaju sa instrukcijom pushal.
+Pushal instrukcijom pushamo registre: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, što
+odgovara layoutu structu Trapframe.
+
+Poslije toga u ds i es registre se učitavaju vrijednosti za kernel data segment, i
+nakon toga smo spremni za poziv trap-a, sa time što %esp prosljeđujemo kao argument.
+On pokazuje na struct Trapframe.
+trap() u suštini nikad ne bi trebao da se vrati ovdje. Dakle ili se vrati u user mode
+ili se proces uništi ili u nekom slučaju dolazi do panic-a.
+
+U funkciji trap_init koristimo dosad napravljeno i pomoću toga inicijaliziramo 
+interrupt descriptor tabelu. Dakle ovdje koristimo onaj asembler entry point i 
+trap number iz inc/trap.h.
+
+Prvo deklariramo funkcije za svaki od trapova, koji nam je potreban za makro SETGATE
+koji je najbitniji u ovoj funkciji.
+SETGATE (koji se nalazi u inc/mmu.h) služi za inicijalizaciju jednog ulaza u IDT (
+interrupt descriptor tabeli), u kojem se opisuje kako CPU treba da se ponaša kada 
+pređe u kernel kada se desi određeni prekid.
+
+Sastoji se od više parametara:
+-Parametar istrap određuje da li je ulaz trap gate ili interrupt gate. Interrupt gate
+automatski gasi IF flag i privremeno onemogućava daljnje prekide, dok trap 
+gate ostavlja IF nepromijenjen.
+IF je interrupt enable flag.
+-sel je selektor kernel code segmenta (mi koristimo GD_KT), koji govori procesoru u 
+koje segmentu se nalazi ovaj handler za prekid.
+-off  je adresa tj. offset funkcije u tom segmentu tj. entry point u trapentry.S
+-dpl određuje iz kojeg privilege levela se gate smije pozvati softverskim instrukcijama
+(instrukcija int). Vrijednost 0 znači samo kernel, a 3 znači user.
+
+SETGATE(idt[T_DIVIDE], 0, GD_KT, &t_divide, 0);
+
+Tako npr. ovom linijom tu inicijaliziramo interrupt descriptor table polje 0, 
+postavljamo gate na 0, dakle gate za prekid, biramo code segment selector GD_KT
+što je kernel code segment. &t_divide služi kao offset za asemblerski entry za
+handleovanje prekida trapom t_divide i descriptor privilege level postavljamo
+0, tj. da kernel može raditi sa ovim IDT entryem.
+Ostali SETGATE-ovi su identični samo koriste druge offsete i indekse za IDT.
+
+trap_init_percpu() postavlja IDT sa asemblesrkom funkcijom lidt i podešava Task State
+Segment (TSS).
+
+Ovako to izgleda u trap.c:
+
+void
+trap_init(void)
+{
+	extern struct Segdesc gdt[];
+
+	void t_divide();
+	void t_debug();
+	void t_nmi();
+	void t_brkpt();
+	void t_oflow();
+	void t_bound();
+	void t_illop();
+	void t_device();
+	void t_dblflt();
+	void t_tss();
+	void t_segnp();
+	void t_stack();
+	void t_gpflt();
+	void t_pgflt();
+	void t_fperr();
+	void t_align();
+	void t_mchk();
+	void t_simderr();
+
+	SETGATE(idt[T_DIVIDE], 0, GD_KT, &t_divide, 0);
+	SETGATE(idt[T_DEBUG], 0, GD_KT, &t_debug, 0);
+	SETGATE(idt[T_NMI], 0, GD_KT, &t_nmi, 0);
+	SETGATE(idt[T_BRKPT], 0, GD_KT, &t_brkpt, 0);
+	SETGATE(idt[T_OFLOW], 0, GD_KT, &t_oflow, 0);
+	SETGATE(idt[T_BOUND], 0, GD_KT, &t_bound, 0);
+	SETGATE(idt[T_ILLOP], 0, GD_KT, &t_illop, 0);
+	SETGATE(idt[T_DEVICE], 0, GD_KT, &t_device, 0);
+	SETGATE(idt[T_DBLFLT], 0, GD_KT, &t_dblflt, 0);
+	SETGATE(idt[T_TSS], 0, GD_KT, &t_tss, 0);
+	SETGATE(idt[T_SEGNP], 0, GD_KT, &t_segnp, 0);
+	SETGATE(idt[T_STACK], 0, GD_KT, &t_stack, 0);
+	SETGATE(idt[T_GPFLT], 0, GD_KT, &t_gpflt, 0);
+	SETGATE(idt[T_PGFLT], 0, GD_KT, &t_pgflt, 0);
+	SETGATE(idt[T_FPERR], 0, GD_KT, &t_fperr, 0);
+	SETGATE(idt[T_ALIGN], 0, GD_KT, &t_align, 0);
+	SETGATE(idt[T_MCHK], 0, GD_KT, &t_mchk, 0);
+	SETGATE(idt[T_SIMDERR], 0, GD_KT, &t_simderr, 0);
+
+	// Per-CPU setup 
+	trap_init_percpu();
+}
+
+Sada odgovorimo na pitanje exercise-a 4.
+
+"Call trap (can trap ever return ?)"
+
+Kratak odgovor je ne. Obrazloženje zašto je to tako slijedi iz same funkcije trap koja je u kern/trap.c.
+U funkciji trap.c nigdje se ne koristi klasičan return, iz ovog već otprilike vidimo da se ne vraćamo
+u kod odakle je pozvana funkcija trap. Ono što se dešava je sledeće:
+Poziva se env_run, deklaracija env_run-a unutar kern/env.h je sledeća:
+env_run(struct Env *e) __attribute__((noreturn));
+Ovaj attribute govori compileru da funkcija nikada ne vraća kontrolu calleru.
+Dakle iz funkcije trap poziva se env_run koji interno poziva funkciju 
+env_pop_tf koji popuje registre i vraća stanje CPU koje očekuje nakon povratka
+iz kernel moda u user program nakon prekida. Dakle nema potrebe da se vraćamo
+iz funkcije trap, jer se izvršavanje ne treba nastaviti u kernel kodu koji je
+bio potreban za handle prekida.
+
+1.
+What is the purpose of having an individual handler function for each 
+exception/interrupt? (i.e., if all exceptions/interrupts were delivered to the 
+same handler, what feature that exists in the current implementation could not 
+be provided?) 
+
+Svaki exception ili interrupt u JOS-u ima jedinstveni broj (vektor kako kažu u 
+exerciseu) koji procesor koristi da bi indeksirao interrupt descriptor tabelu (IDT).
+Svako polje u IDT-u pokazuje na svaki handler za određeni trap za interrupt.
+
+Ovime se omogućava:
+-odmah identifikuje koji trap se desio, iz razloga što različiti trapovi zahtijevaju
+različit proces obrade.
+-konfiguriše se svaki IDT ulaz posebno, uključujući descriptor privilege level i tip
+gate-a. Neki trapovi moraju biti dostupni iz user moda, dok neki strogo moraju biti
+dostupni samo kernelu.
+-ovim rasporedom održavamo preglednost kernel koda boljom, jer za svaki trap imamo
+jasan proces kojeg se trebamo pridržavati, svaki handler ima zaseban entry point,
+što definitivno olakšava debug koda i razumijevanje ukoliko dođe do nekog buga.
+
+Kada bi svi prekidi išli na istu funkciju handlera, kernel bi izgubio mogućnost
+da tačno zna koji privilege level treba koristiti za koji trap, da razlikuje
+svaki trap zasebno bez dodatne provjere stacka i error code-a.
+Dakle vidimo da svaki interrupt može biti pravilno obrađen upravo zbog ovakve
+organizacije koda.
+U suprotnom kontrola privilegija, raspoznavanje trapova bi bilo dosta teže bez 
+ovog sistema.
+
+Da smo imali jedan handler za sve, unutar tog handlera bismo morali dodatno praviti
+corner case-ove za određene trapove na osnovu njihovog broja, što bi bila dodatna
+komplikacija i efektivno bi morali svest na nekakav sličan sistem, samo vjerovatno 
+dodatno zakomplikovano.
+
+2.
+Did you have to do anything to make the user/softint program behave 
+correctly? The grade script expects it to produce a general protection fault (trap 13), 
+but softint's code says int $14. Why should this produce interrupt vector 13? 
+What happens if the kernel actually allows softint's int $14 instruction to invoke 
+the kernel's page fault handler (which is interrupt vector 14)?
+
+
+Program softint.c
+
+#include <inc/lib.h>
+
+void
+umain(int argc, char **argv)
+{
+	asm volatile("int $14");	// page fault
+}
+
+U ovom programu imamo instrukciju int $14. $14 bira ulaz 14 u interrupt descriptor
+tabeli tj. ako pogledamo u inc/trap.h to je page fault. Int instrukcija je instrukcija 
+za generisanje prekida. Kada program izvrši int $n, CPU softverski generiše trap pod brojem n.
+Dakle, ovaj program generiše trap u user režimu rada, za koji je descriptor privilege level 
+IDT-a entry-a neophodan da bude 3. 
+Zašto je ovo bitno sad ćemo vidjeti.
+
+Kod definisanja TRAPGATE-a za trap number 14 - page fault, on je definisan na sledeći
+način:
+
+	SETGATE(idt[T_PGFLT], 0, GD_KT, &t_pgflt, 0);
+
+Njegov peti argument je 0, a znamo da je peti argument DPL odnosno descriptor privilege
+level, koji je kao što vidimo 0. To znači da ovaj prekid ne može direktno izazvati
+neko ko ima privilege level 3. 
+Zbog toga se aktivira trap 13 general protection fault, što grade skripta i očekuje. 
+Dakle mi nismo morali ništa raditi, ovo je očekivano ponašanje.
+
+U trenutnoj implementaciji nije moguće da instrukcija za softverske prekide generira trap koji
+je očigledno namjenjen samo za hardverske iznimke (za trapove za koje smo mi odradili SETGATE). 
+Da bismo to uradili morali bi promjeniti DPL polje u IDT entry-u za page fault na 3 i 
+prilagoditi sve ostale popratne stvari uz to. To bi bilo vrlo rizično jer bi user kod mogao direktno
+izazvati trap koji je dizajniran samo za hardverske greške, što bi moglo dovesti do
+nepredvidivog ponašanja.
+
+Generalno, kernel je dizajniran tako da spriječi user kod da direktno poziva 
+hardverske trapove zbog sigurnosti, tako da ovo nema baš smisla.
+
+---------------------
+Exercise 4. challenge
+---------------------
+
+You probably have a lot of very similar code right now, between the lists of 
+TRAPHANDLER in trapentry.S and their installations in trap.c. Clean this up. 
+Change the macros in trapentry.S to automatically generate a table for trap.c to 
+use. Note that you can switch between laying down code and data in the assembler 
+by using the directives .text and .data.
+
+Implementacija exercise-a 4 prije i poslije challenge-a će biti u fajlovima 
+trap.c i trapentry.s sa time što će implementacija prije challenge-a biti zakomentarisana
+u kodu.
+
+Cilj ovog challenge-a je bio da se smanji sličan kod između fajlova trapentry.S i
+trap.c. U textu challenge-a piše da izmjenimo makroe u trapentry.S misleći na
+TRAPHANDLER i TRAPHANDLER_NOEC makroe, za koje smo ranije rekli da koristimo 
+za generisanje entry pointa za različite vrste trapova.
+Također piše tj. napominju da se mogu mijenjati u asemblerskom kodu .text i .data
+direktive, što u suštini i treba znati, ali se mislilo vjerovatno u kontekstu 
+makroa. To znači da unutar samog makroa mogu prebacivati između .text i .data sekcija.
+Na osnovu ovoga sam zaključio sledeće:
+
+Korištenjem .data i .text sekcija moguće je napraviti sistem u kojem ćemo sve 
+adrese svakog trap-a generisati automatski u asembleru, kao i niz samih njih, a u C-u 
+ih samo dodajemo u interrupt descriptor table.
+
+Dakle to je ideja. Sad idemo na implementaciju:
+
+Izmjenio sam makroe TRAPHANDLER i TRAPHANDLER_NOEC na način da sam odma ispod
+define-a dodao direktivu .data i u njemu 
+.long name
+Na ovaj način efektivno dobijamo adresu trap-a koja će nam trebati, vidit ćemo
+poslije za šta.
+
+Dakle dodali smo:
+
+.data; \
+.long name; \
+
+u oba makro-a.
+
+Sledeća stvar koju smo uradili jeste definisanje niza trap_handlers.
+
+.data
+.global trap_handlers
+trap_handlers:
+.text
+TRAPHANDLER_NOEC(t_divide, T_DIVIDE)
+
+i na ovaj način ispisujemo sve labele nadalje, ali samo što moramo imati jednu bitnu
+stvar ovdje na umu.
+Dakle svaka linija makroa generiše i trap i adresu u ovom nizu.
+U kodu se da primjetiti da imamo skip kao i njegovu definiciju u ovom asembler fajlu:
+
+#define skip
+  .data
+    .long 0x0
+
+Definisao sam makro koji u suštini pravi rupu od 32 bita tj. prazni slot. Ovo sam
+uradio zbog toga što sam u inc/trap.h imao dva zakomentarisana trapa. To su 
+T_COPROC i T_RES. Dakle u cilju nam je da njih "skipamo", iako ih u suštini ne skipamo
+nego samo nuliramo.
+
+U suprotnom, da nema ovog skipa indeksiranje niza trap_handlers bilo bi pogrešno tj.
+adrese u nizu ne bi odgovarale tačnim brojevima trapova. Kernel bi se mogao
+ponašati nepredvidivo zbog ovoga, te je zaključak da je skip neophodan da održi
+pravilno mapiranje adresa u nizu, čak i za rezervisana mjesta koja nemaju stvarni trap
+tj. on nije definiran za te indekse. Na ta mjesta stavljamo 0.
+
+alltraps ostaje isti.
+
+U trap.c nam ostaje da iskoristimo ovaj niz koji smo inicijalizirali u asembler-u.
+To omogućavamo sa
+
+extern uint32_t* trap_handlers[];
+
+Extern je neophodno koristiti da kažemo kompajleru da ne pokušava da kreira novi niz,
+jer već postoji negdje drugo, a linker će to kasnije spojiti i dobit ćemo taj niz.
+Ovdje nam je trap_handlers sada niz pokazivaća na svaki trap zasebno.
+
+void trap_init(void)
+{
+  extern struct Segdesc gdt[];
+
+  for (int i = T_DIVIDE; i <= T_SIMDERR; i++)
+  {
+
+    if (i == T_COPROC || i == T_RES)
+      continue;
+
+    SETGATE(idt[i], 0, GD_KT, trap_handlers[i], 0);
+  }
+
+Petlja prolazi kroz sve trapove i koristi SETGATE da setuje IDT entry sa odgovarajućim
+trapom.
+T_COPROC i T_RES preskačemo jer nisu definirani kao što smo rekli.
+
+I time smo osigurali sve što nam treba kao što smo to uradili i prije challenge-a,
+samo je to sada dosta ljepše i više nije potrebno deklarisati svaku funkciju ručno.
+
+
+  trap_init_percpu();
+}
+
+Na kraju se poziva trap_init_percpu koja inicijalizira i učitava TSS i IDT.
+
+----------
+Exercise 5.
+----------
+
+Dio koda koji smo trebali implementirati u trap_dispatch funkciji je sledeći:
+
+if (tf->tf_trapno == T_PGFLT){
+  page_fault_handler(tf);
+  return;
+  }
+
+tf_trapno je polje unutar struct-a Trapframe u kojem je definisan broj vektora
+trapa. 
+T_PGFLT je vrijednost koja označava page fault exception.
+If-om provjeravamo da li je T_PGFLT broj trenutnog trapa koji se obrađuje.
+Ako jeste trapframe prosljeđujemo u funkciju page_fault_handler().
+Nakon što se page fault obradi, funkcija trap_dispatch se prekida i onda je trap
+već obrađen i ne trebamo dalje prolaziti kroz ostale uslove.
+
+-----------
+Exercise 6.
+-----------
+
+U ovom exerciseu u trap_dispatch funkciji se trebao dodati if uslov u kojem
+provjeravamo da li je trenutni trap number 3 odnosno trap number za breakpoint
+exception. Ukoliko jeste treba da ispisemo trapframe u konzoli.
+Dakle dodan je dispatch za T_BRKPT iznimku.
+Pri prvom pokretanju ovo nije radilo. Pogledao sam u breakpoint program kod.
+Breakpoint iznimka se generiše int $3 instrukcijom iz user programa. Ali za 
+ovaj exception nivo privilegija postavljen u trap_init u DPL polju u ID tabeli je 0.
+Dakle, jasno je da ovo ne može raditi.
+Sa tim u vezi promijenjen je kod trap_init funkcije na sledeći način:
+
+...
+
+  for (int i = T_DIVIDE; i <= T_SIMDERR; i++)
+  {
+    if (i == T_BRKPT) {
+      SETGATE(idt[i], 0, GD_KT, trap_handlers[i], 3);
+    }
+    else {
+    if (i == T_COPROC || i == T_RES)
+      continue;
+
+    SETGATE(idt[i], 0, GD_KT, trap_handlers[i], 0);
+    }
+  }
+
+...
+
+Dodali smo uslov ako je i jednak 3 odnosno breakpoint exception-u, onda SETGATE makro
+koristimo na način da setujemo deskriptor u IDT na nivo privilegija 3.
+Na taj način grade skripta prolazi na breakpoint testu.
+
+---------------------
+Pitanja exercise-a 6.
+---------------------
+
+1.
+The break point test case will either generate a break point exception or a general 
+protection fault depending on how you initialized the break point entry in the IDT 
+(i.e., your call to SETGATE from trap_init). Why? How do you need to set it up in order 
+to get the breakpoint exception to work as specified above and what incorrect setup 
+would cause it to trigger a general protection fault?
+
+Break point test case generiše breakpoint exception instrukcijom int $3. Već smo
+spominjali da instrukcija int služi za generisanje prekida. $3 je trap number za 
+breakpoint exception. Ukoliko je DPL datog IDT entry-a na 0, a breakpoint exception 
+se poziva iz user programa, dolazi do general protection faulta. Ako se generiše
+prekid breakpointa u user programu, onda u IDT entry-u moramo postaviti DPL na 3.
+To je efektivno odgovor na dato pitanje.
+
+2.
+What do you think is the point of these mechanisms, particularly in light 
+of what the user/softint test program does?
+
+Poenta ovog mehanizma jeste da se uspostavi OS protekcija. Dakle, ključno je da 
+korisnički programi izvršavaju svoj kod i samo svoj kod, ne ulazeći u nivo kernela
+sve dok se eventualno ne generiše neki oblik interrupta. Kada se isti generiše
+moramo znati kojim nivoem privilegija možemo handleovati taj interrupt. U suprotnom
+da nema ovog, potencijalno bi moglo dolaziti do toga da program koji je namjenjen
+za korisnika i njegovim radom i izvršavanjem koda dođe do pisanja po kernel memoriji
+i dolaska do page fault-ova, rušenja i resetovanja sistema.
+
+----------
+Exercise 7.
+----------
+
+U exerciseu 7. potrebno je da dodamo handler za vektor prekida tipa T_SYSCALL. Ovaj
+prekid se dešava pri sistemskim pozivima, vidit ćemo u daljem toku izvještaja koje
+vrste postoje i kada se koriste.
+Prva stvar koju smo trebali uraditi jeste da dodamo novi entry point u trapentry.S.
+To smo uradili na sledeći način:
+
+#define tosys \
+  .rept 28;       \
+    .long 0x0;    \
+  .endr
+
+.data
+.global trap_handlers
+trap_handlers:
+.text
+TRAPHANDLER_NOEC(t_divide, T_DIVIDE)
+.
+.
+.
+TRAPHANDLER_NOEC(t_simderr, T_SIMDERR)
+.data
+tosys
+TRAPHANDLER_NOEC(t_syscall, T_SYSCALL)
+
+Prije svega u svrhu postavljanja trap handlera za sistemski poziv na njegovo pravo
+mjesto morao sam osmisliti neki vid mehanizma kako bi napravio "razmak" između
+SIMD floating point error-a i system_call interrupta čiji je trap number 48.
+U tu svrhu definisao sam makro tosys koji koristi jednu interesantnu direktivu.
+.rept direktiva je direktiva koja omogućava ponavljanje bloka koda ili instrukcija
+više puta. Radi se bukvalno o petlji unutar asemblera. Ova direktiva koju sam 
+pronašao nam je baš korisna u ovom ovdje slučaju. Dakle mi ćemo od ovog 19. trapa
+popuniti rupama (sa .long 0x0) do trapa sistemskog poziva. Ja sam u tosys
+konkretno rekao: ponovi sledeći kod 28 puta i generisao svaki put 4 bajta sa nulama.
+Dakle ovaj makro stvara 28 uzastopnih 32-bitnih nula u memoriji. Dakle mi od 76
+bajta dodajemo 112 bajta (28*4B) i time popunjavamo sve do 47 trap-a. I onda
+pišemo makro koji će generisati entry point za prekid sistemskog poziva.
+Za dosad napisane makroe koristio sam se knjigom "Intel 64 and IA-32 Architetures
+Software Developer's Manual - Volume 3A". U njoj imamo čitav chapter vezan za
+interrupte i exception handlinge, svaki interrupt i podatak da li on ima error-code
+ili ne. Za sistemski poziv što spada u user defined interrupt, error code je
+not applicable. Dakle koristimo makro TRAPHANDLER_NOEC. 
+Bitno je napomenuti sledeću stvar koju nisam baš lako uočio pri pisanju ovog koda.
+Naime prije poziva makroa "tosys" mora se postaviti direktiva .data. tosys 
+pokušava da smjesti 4 bajta po svakoj iteraciji. To je podatak ne instrukcija.
+Zato mora biti u .data direktivi. Nije bilo potrebe da postavljamo direktivu
+poslije "tosys" poziva jer makro definiše direktivu za sebe.
+To je što se tiče promjena u trapentry.S.
+
+U trap_init funkciji takođe moramo dodati inicijalizaciju deskriptora u IDT-u
+za sistemski poziv.
+Bukvalno sam dodao jednu liniju van petlje, prije trap_init_percpu funkcije. 
+
+SETGATE(idt[T_SYSCALL], 0, GD_KT, trap_handlers[T_RES], 3);
+
+Kao što smo rekli ovaj interrupt je user-defined, stoga je neophodno da DPL bude
+postavljen na 3.
+
+U funkciji trap_dispatch potrebno je dodati dispatch za sistemski poziv. Po 
+specifikaciji exercise-a potrebno je pozvati syscall funkciju kako bi se 
+handleovao ovaj prekid, sa odgovarajućim argumentima. syscall() prima 6 argumenata
+i trebaju biti ovim redom : %eax, %edx, %ecx, %ebx, %edi, %esi. U %eax registru se 
+smješta broj sistemskog poziva. Na kraju je potrebno da se povratna vrijednost
+ove funkcije nađe u registru %eax, tako da ćemo je u kodu smjestiti u registar
+%eax, kojeg dobijamo iz trapframe-a konkretno njegovog structa.
+
+Ovako to izgleda u kodu funkcije trap_dispatch:
+
+ if (tf->tf_trapno == T_SYSCALL){
+  tf->tf_regs.reg_eax =
+  syscall((tf->tf_regs).reg_eax, (tf->tf_regs).reg_edx, (tf->tf_regs).reg_ecx, (tf->tf_regs).reg_ebx, (tf->tf_regs).reg_edi, (tf->tf_regs).reg_esi);
+  return;
+  }
+
+Posljednja stvar u exerciseu 7. je implementacija funkcije syscall u lib/syscall.c.
+
+Ovako to izgleda u kodu:
+
+int32_t
+syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
+{
+
+	switch (syscallno) {
+  case SYS_cputs:
+    sys_cputs((const char*)a1, a2); 
+    return 0;
+  case SYS_cgetc:
+    return sys_cgetc();
+  case SYS_getenvid:
+    return sys_getenvid();
+  case SYS_env_destroy:
+    return sys_env_destroy(a1);
+	default:
+		return -E_INVAL;
+	}
+}
+ 
+Znači imamo switch case i zavisnosti koji je sistemski poziv trenutni vraćamo
+odgovarajuću funkciju.
+Vidimo iz ovog da imamo 4 sistemska poziva:
+
+-SYS_cputs - ispisuje string na konzolu, uzima adresu stringa i njegovu dužinu
+-SYS_getc - čita jedan karakter sa konzole 
+-SYS_getenvid - vraća ID trenutno aktivnog environmenta (procesa)
+-SYS_env_destroy - uništava odabrani proces
+
+Za nepoznat sistemski poiv vraća se -E_INVAL.
+
+Razlog iz kojeg je dat switch case i zgodno ga je koristiti u ovoj funkciji je 
+zbog definicije vrsta sistemskih poziva u inc/syscalj funkciji je zbog definicije 
+vrsta sistemskih poziva u inc/syscall.h
+
+enum {
+	SYS_cputs = 0,
+	SYS_cgetc,
+	SYS_getenvid,
+	SYS_env_destroy,
+	NSYSCALLS
+};
+
+Ovim načinom tj. enum definicijom tipova sistemskih poziva svaki tip dobija svoj id i
+na osnovu njega kroz switch case omogućava se direktan dispatch na određenu funkciju
+za određeni sistemski poziv.
+
+Time smo kompletirali exercise 7.
+
+----------
+Exercise 8.
+----------
+
+Zadatak je bio da se thisenv varijabla postavi da pokazuje na struct Env u listi 
+envs-a. Na MIT stranici laba 3, dat je hint da se koristi funkcija sys_getenvid().
+Ta funkcija putem sistemskog poziva SYS_getenvid, kojeg smo osposobili u prošlom
+exerciseu, vraća id aktivnog procesa. Na osnovu ovog smo dobili trenutni id. 
+Korištenjem makroa ENVX iz inc/env.h dobijamo tačan indeks. 
+#define ENVX(envid) ((envid) & (NENV-1))
+Envid je 32-bitni identifikator procesa iz kojeg je nama potrebno prvih 10 bita
+za indeks. Iz tog razloga radimo and sa 1023 (1024-1). Zašto baš sa 1023 ?
+1023 je u binarnom 1111111111. Dakle 10 jedinica i kada maskiramo ovo dobijamo samo
+10 prvih bita na 1 ili 0. 2^10 je 1024, tako da je to raspon u kojem se nalazi 
+indeks našeg procesa u envid varijabli.
+Na kraju to u lib/libmain.c izgleda ovako:
+
+thisenv = &envs[ENVX(sys_getenvid())];
+
+& jer je thisenv pointer i zahtijeva adresu.
+
+----------
+Exercise 9.
+----------
+
+Prvo što trebamo uraditi jeste da modifikujemo trap.c na način da aktiviramo
+panic ukoliko se page fault desi u kernel modu. Da bi provjerili da li se
+page fault desio u user modu ili kernel modu provjeravamo prva 2 bita.
+Provjeru vršimo u page_fault_handler funkciji:
+
+void
+page_fault_handler(struct Trapframe *tf)
+{
+  ...
+	// Handle kernel-mode page faults.
+
+	// LAB 3: Your code here.
+  if ((tf->tf_cs & 3) == 0)
+    panic("Kernel page fault!");
+  ...
+}
+
+Funkcija user_mem_asssert iz kern/pmap.c je zadužena za provjeravanje da li dati
+proces može pristupiti memoriji, konkretno od va do va+len, što je dato kao
+argumenti funkcije. Ukoliko ne može, onda se poziva funkcija env_destroy koja
+uništava proces.
+Unutar funkcije user_mem_assert se poziva user_mem_check koja zapravo vrši provjeru.
+Ovako funkcija user_mem_assert izgleda:
+
+void
+user_mem_assert(struct Env *env, const void *va, size_t len, int perm)
+{
+	if (user_mem_check(env, va, len, perm | PTE_U) < 0) {
+		cprintf("[%08x] user_mem_check assertion failure for "
+			"va %08x\n", env->env_id, user_mem_check_addr);
+		env_destroy(env);	// may not return
+	}
+}
+
+Funkciju user_mem_check je potrebno napisati prema komentaru iznad funkcije.
+Zadatak ove funkcije da provjerava da li dati proces ima dozvolu da pristupi 
+određenom dijelu memorije. Prvo se početna i krajnja adresa aligniraju na granice
+stranica pomoću ROUNDDOWN i ROUNDUP, jer provjeru potencijalno vršimo za više
+stranica. Zatim funkcija prolazi kroz sve stranice u tom rasponu. Prvo se 
+provjerava da li adresa prelazi granicu korisničkog prostora (ULIM), jer korisnički
+procesi ne smiju pristupati kernel memoriji, logično. Za svaku stranicu se 
+pomoću pgdir_walk dobija pointer na page table entry. Zatim se provjerava da li
+je stranica present (PTE_P) i da li ima tražene permisije (perm). Ako neka provjera
+ne uspije, u user_mem_check_addr se upisuje prva nevalidna adresa i funkcija vraća
+-E_FAULT (negativna vrijednost). Bitno je da u svakom slucaju provjerimo da li je
+addr<va, jer ako jeste vraćamo upravo va, odnosno prvu adresu u opsegu koji
+provjeravamo. Ovaj corner case je bitan za uočiti i implementirati, kako bi kernel
+ispravno detektovao nevalidnu adresu, ukoliko je slučaj da je to početna adresa.
+Ako su sve stranice validne i imaju odgovarajuće dozvole, onda funkcija vraća 0.
+
+int
+user_mem_check(struct Env *env, const void *va, size_t len, int perm)
+{
+  pte_t *pte;
+  uintptr_t start = ROUNDDOWN((uintptr_t)va, PGSIZE);
+  uintptr_t end = ROUNDUP((uintptr_t)va + len, PGSIZE);
+  uintptr_t addr;
+  for (addr = start; addr < end ; addr += PGSIZE) {
+    if (addr >= ULIM){
+      if (addr < (uintptr_t)va){
+      user_mem_check_addr = (uintptr_t) va;
+      return -E_FAULT;
+      }
+      else{ 
+      user_mem_check_addr = addr;
+      return -E_FAULT;
+        }
+    }
+  pte = pgdir_walk(env->env_pgdir, (void*)addr, 0);
+
+  if ((*pte & perm) != perm || !(*pte & PTE_P) || !pte){
+      if (addr < (uintptr_t) va){
+        user_mem_check_addr = (uintptr_t) va;
+        return -E_FAULT;
+          }
+      else {
+        user_mem_check_addr = addr;
+      return -E_FAULT;  
+      }
+    }
+  }
+
+	return 0;
+}
+
+U kern/syscall.c provjeravamo da li proces može čitati adrese u rasponu od
+početne adrese do početne adrese + len u cilju ispisivanja stringa.
+
+static void 
+sys_cputs(const char* s, size_t len) 
+{
+  user_mem_assert(curenv, s, len, PTE_U);
+  cprintf("%.*s", len, s);
+}
+
+Unutar debuginfo_eip funkcije unutar kern/kdebug.c radimo sanity check na usd-u
+stabs-u i stabstr-u, kao i u sys_cputs, sa time što ovoga puta ako ne smijemo 
+pristupati toj memoriji vraćamo -1.
+
+		// Make sure this memory is valid.
+		// Return -1 if it is not.  Hint: Call user_mem_check.
+		// LAB 3: Your code here.
+    if (user_mem_check(curenv, usd, sizeof(struct UserStabData), PTE_U) <0)
+      return -1;   
+
+		stabs = usd->stabs;
+		stab_end = usd->stab_end;
+		stabstr = usd->stabstr;
+		stabstr_end = usd->stabstr_end;
+
+		// Make sure the STABS and string table memory is valid.
+		// LAB 3: Your code here.
+    if (user_mem_check(curenv, stabs, stab_end-stabs, PTE_U) < 0)
+      return -1;
+    if (user_mem_check(curenv, stabstr, stabstr_end - stabstr, PTE_U) < 0)
+      return -1;
+
+Sa time smo završili i exercise 9.
+
+-----------
+Exercise 10.
+-----------
+
+user/evilhello.c
+
+// evil hello world -- kernel pointer passed to kernel
+// kernel should destroy user environment in response
+
+#include <inc/lib.h>
+
+void
+umain(int argc, char **argv)
+{
+	// try to print the kernel entry point as a string!  mua ha ha!
+	sys_cputs((char*)0xf010000c, 100);
+}
+
+Program evilhello pokušava da sistemski pozivom za ispis isprinta ono što je na kernel entry pointu na kernel monitor. Jasno je da kernel memorija ne smije biti dirana te 
+ovo ne smije proći tj. user_mem_check mora da javi grešku.
+
+Pokretanjem ovog program sa "make run-evilhello" dobijamo ovaj ispis na konzoli.
+
+6828 decimal is 15254 octal!
+Physical memory: 131072K available, base = 640K, extended = 130432K
+check_page_free_list() succeeded!
+check_page_alloc() succeeded!
+check_page() succeeded!
+check_kern_pgdir() succeeded!
+check_page_free_list() succeeded!
+check_page_installed_pgdir() succeeded!
+[00000000] new env 00001000
+Incoming TRAP frame at 0xefffffbc
+Incoming TRAP frame at 0xefffffbc
+[00001000] user_mem_check assertion failure for va f010000c
+[00001000] free env 00001000
+Destroyed the only environment - nothing more to do!
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+
+Vidimo da se javlja user_mem_check assertion failure i to nam govori da je implementacija user_mem_check funkcije ispravna.
+
