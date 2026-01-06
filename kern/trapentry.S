@@ -128,8 +128,8 @@ alltraps same before challenge vs after challenge
 .text
 
 _alltraps:
-pushl %es;
 pushl %ds;
+pushl %es;
 pushal;
 movw $GD_KD, %ax;
 movw %ax, %ds
