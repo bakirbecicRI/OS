@@ -299,6 +299,11 @@ mem_init_mp(void)
 	//     Permissions: kernel RW, user NONE
 	//
 	// LAB 4: Your code here:
+  int i;
+  for (i = 0; i < NCPU; i++) {
+  boot_map_region(kern_pgdir,KSTACKTOP-i*(KSTKSIZE+KSTKGAP)- KSTKSIZE, KSTKSIZE, PADDR(percpu_kstacks[i]), PTE_W);
+
+  }
 
 }
 
@@ -341,12 +346,17 @@ page_init(void)
 	size_t i;
   //1. Physical page 0 is reserved
   pages[0].pp_ref=1;
-
+  size_t idx= MPENTRY_PADDR/PGSIZE;
   //2. Base memory: [1, npages_basemem)
 	for (i = 1; i < npages_basemem; i++) {
-		pages[i].pp_ref = 0;
-		pages[i].pp_link = page_free_list;
-		page_free_list = &pages[i];
+    if (i == idx) {
+            pages[i].pp_ref = 1;
+    }
+    else {
+            pages[i].pp_ref = 0;
+            pages[i].pp_link = page_free_list;
+            page_free_list = &pages[i];
+    }
 	}
 
   //3. IO hole: [IOPHYSMEM, EXTPHYSMEM), do not allocate
@@ -638,7 +648,13 @@ mmio_map_region(physaddr_t pa, size_t size)
 	// Hint: The staff solution uses boot_map_region.
 	//
 	// Your code here:
-	panic("mmio_map_region not implemented");
+	size_t full_size = ROUNDUP(size, PGSIZE);
+  if (base + full_size >= MMIOLIM)
+    panic("mmio_map_region: size over MMIOLIM!");
+  boot_map_region(kern_pgdir, base, full_size, pa, PTE_PCD | PTE_PWT | PTE_W);
+  uintptr_t new_base = base;
+  base += full_size;
+  return (void *) new_base;
 }
 
 static uintptr_t user_mem_check_addr;
