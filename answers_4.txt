@@ -1,0 +1,382 @@
+Exercise 1
+
+mmio_map_region je funkcija koja nam služi za mapiranje fizičkih adresa u koje su 
+pisane neki drugi uređaj u virtuelnu memoriju od MMIOBASE do MMIOLIM. 
+
+void *
+mmio_map_region(physaddr_t pa, size_t size)
+{
+	static uintptr_t base = MMIOBASE;
+
+	size_t full_size = ROUNDUP(size, PGSIZE);
+  if (base + full_size >= MMIOLIM)
+    panic("mmio_map_region: size over MMIOLIM!");
+  boot_map_region(kern_pgdir, base, full_size, pa, PTE_PCD | PTE_PWT | PTE_W);
+  uintptr_t new_base = base;
+  base += full_size;
+  return (void *) new_base;
+}
+
+base je static varijabla u koju se smješta adresa u koju se piše virtualna adresa 
+od koje treba krenuti mapiranje ovog MMIO regiona.
+size zaokruzujemo na veličinu stranice (PGSIZE), znamo jer se mapiranje radi po 
+stranicama i to smještamo u full_size.
+U sledećoj liniji provjeravamo da li ukupna veličina prelazi granicu MMIOLIM. Ako je
+to slučaj aktivira se panic. Jasno je da se to ne smije desiti.
+boot_map_region pravi mapiranje: virtualna adresa "base" - fizička adresa "pa", u 
+kernel adresni prostor (u kernel page directory). Postavljamo permisiju PTE_W jer 
+trebamo imati mogućnost pisanja u IO uređaje, sa time da imamo i ova dva nova flaga
+a to su PTE_PCD i PTE_PWT. Oni su tu da daju informacije o keširanju stranice 
+procesoru.
+
+Exercise 2.
+U ovom exerciseu je potrebno da zaobiđemo dodavanje stranice na MPENTRY_PADDR adresi
+na free listu, kako bi se bez problema mogao kopirati i pokrenuti bootstrap kod za
+aplikaciona jezgra na toj adresi.
+To radimo na sledeći način:
+
+size_t idx=MPENTRY_PADDR/PGSIZE;
+
+ //2. Base memory: [1, npages_basemem)
+	for (i = 1; i < npages_basemem; i++) {
+    if (i == MPENTRY_PADDR/PGSIZE) {
+            pages[i].pp_ref = 1;
+    }
+    else {
+            pages[i].pp_ref = 0;
+            pages[i].pp_link = page_free_list;
+            page_free_list = &pages[i];
+    }
+	}
+
+idx stranice za MPENTRY dobijamo na način da dijelimo sa PGSIZE, zašto sa PGSIZE.
+Dijelimo sa 4096 (PGSIZE), jer time dobijamo efektivno shiftanje udesno za 12, i time
+u onom binarnom kodu fizičke adrese dobijamo broj stranice. Na taj način poredimo
+sa trenutnom stranicom u for petlji, i ako je to ta stranica samo povećavamo reference
+count.
+
+Exercise 2.
+
+Question 1.
+Compare kern/mpentry.S side by side with boot/boot.S. Bearing in mind that 
+kern/mpentry.S is compiled and linked to run above KERNBASE just like everything 
+else in the kernel, what is the purpose of macro MPBOOTPHYS? Why is it necessary 
+in kern/mpentry.S but not in boot/boot.S? In other words, what could go wrong if 
+it were omitted in kern/mpentry.S? Hint: recall the differences between the link 
+address and the load address that we have discussed in Lab 1.
+
+mpentry.s
+
+#define RELOC(x) ((x) - KERNBASE)
+#define MPBOOTPHYS(s) ((s) - mpentry_start + MPENTRY_PADDR)
+
+.set PROT_MODE_CSEG, 0x8	# kernel code segment selector
+.set PROT_MODE_DSEG, 0x10	# kernel data segment selector
+
+.code16           
+.globl mpentry_start
+mpentry_start:
+	cli            
+
+	xorw    %ax, %ax
+	movw    %ax, %ds
+	movw    %ax, %es
+	movw    %ax, %ss
+
+         -----------------------
+	lgdt   | MPBOOTPHYS(gdtdesc) |
+         -----------------------
+	movl    %cr0, %eax
+	orl     $CR0_PE, %eax
+	movl    %eax, %cr0
+
+                             --------------------------
+	ljmpl   $(PROT_MODE_CSEG), | $(MPBOOTPHYS(start32)) |
+                             --------------------------
+
+...
+	
+------  
+boot.S
+------
+
+#include <inc/mmu.h>
+
+# Start the CPU: switch to 32-bit protected mode, jump into C.
+# The BIOS loads this code from the first sector of the hard disk into
+# memory at physical address 0x7c00 and starts executing in real mode
+# with %cs=0 %ip=7c00.
+
+.set PROT_MODE_CSEG, 0x8         # kernel code segment selector
+.set PROT_MODE_DSEG, 0x10        # kernel data segment selector
+.set CR0_PE_ON,      0x1         # protected mode enable flag
+
+.globl start
+start:
+  .code16                     # Assemble for 16-bit mode
+  cli                         # Disable interrupts
+  cld                         # String operations increment
+
+  # Set up the important data segment registers (DS, ES, SS).
+  xorw    %ax,%ax             # Segment number zero
+  movw    %ax,%ds             # -> Data Segment
+  movw    %ax,%es             # -> Extra Segment
+  movw    %ax,%ss             # -> Stack Segment
+
+  # Enable A20:
+  #   For backwards compatibility with the earliest PCs, physical
+  #   address line 20 is tied low, so that addresses higher than
+  #   1MB wrap around to zero by default.  This code undoes this.
+seta20.1:
+  inb     $0x64,%al               # Wait for not busy
+  testb   $0x2,%al
+  jnz     seta20.1
+
+  movb    $0xd1,%al               # 0xd1 -> port 0x64
+  outb    %al,$0x64
+
+seta20.2:
+  inb     $0x64,%al               # Wait for not busy
+  testb   $0x2,%al
+  jnz     seta20.2
+
+  movb    $0xdf,%al               # 0xdf -> port 0x60
+  outb    %al,$0x60
+
+  # Switch from real to protected mode, using a bootstrap GDT
+  # and segment translation that makes virtual addresses 
+  # identical to their physical addresses, so that the 
+  # effective memory map does not change during the switch.
+  lgdt    gdtdesc
+  movl    %cr0, %eax
+  orl     $CR0_PE_ON, %eax
+  movl    %eax, %cr0
+
+Prva razlika koju možemo vidjeti jeste da ova A20 adresna linija koja uzgred rečeno
+ima veze sa omogućavanjem adresiranja iznad 1 MB i mora biti uključena prije prelaska
+u protected modeu, se uključuje u boot.S, jer u mpentry.S nema potrebe ponovo raditi
+istu stvar. Ovo je više legacy stvar i nije toliko bitna u kontekstu ovog pitanja.
+boot.S je bootloader koji CPU izvršava kada se OS boota. Ovaj kod radi direktno
+na fizičkim adresama RAM-a. U ovim trenucima nije još aktivan virtuelni adresni
+prostor, i zato sve adrese koje koristi su fizičke.
+Sa druge strane mpentry.S je dio kernela koji se izvršava kada se pokreću drugi 
+procesori tj. AP-ovi. Ovaj kod je linkan da se izvršava iz višeg virtuelnog adresnog
+prostora (KERNBASE + offset).
+Ali u trenutku kada aplikaciono jezgro starta, on još uvijek koristi fizičke adrese
+dok ne postavi paging i ne prebaci se na virtuelni adresni prostor.
+MPBOOTPHYS je makro koji se koristi u mpentry.S i služi kao makro koji vraća fizičku
+adresu mjesta odakle se želi kernel pokrenuti, odnosno fizičku adresu početka ovog
+mpentry koda.
+Kernel je linkovan na virtualni KERNBASE, ali AP još nije prešao na kernel virtuelni
+prostor, zbog toga se ovo mora uraditi.
+mpentry.S kada bi radio na način na koji radi boot.S, čitalo bi se sa pogrešne fizičke
+lokacije i došlo bi do nedefiniranog ponašanja.
+Ovaj makro nije potreban u boot.S jer kod radi direktno iz fizičke memorije, kod je 
+linkovan da radi na 0x7c00 i u ovom trenutku paging nije setovan te je virtuelni 
+adresni prostor nepoznat.
+Da smo kojim slučajem izostavili ovaj MPBOOTPHYS u mpentry.S AP bi koristio virtuelnu
+adresu KERNBASE prije nego što je paging uključen. To znači da bi CPU pokušao učitati
+instrukcije iz nemapiranog regiona memorije, te bi to dovelo do buga i crasha sistema.
+Dakle, glavni razlog zašto se ovo dešava jeste to što je kernel linkovan na KERNBASE,
+ali fizički se mpentry kod nalazi na nižoj adresi u memoriji, zato nam je neophodan
+ovaj makro MPBOOTPHYS.
+
+#define MPBOOTPHYS(s) ((s) - mpentry_start + MPENTRY_PADDR)
+s je adresa instrukcije u mpentry.S. Oduzimanjem sa mpentry_start dobijemo offset
+unutar mpentry koda. MPENTRY_PAADR je fizička adresa u RAM-u na kojoj je fizički 
+loadovan mpentry kod. I onda bukvalno dodajemo fizičku adresu gdje je taj kod
+smješten u RAM-u na ovaj prethodno dobijeni offset. Na taj način vršimo ispravno
+mapiranje ovog mpentry.s.
+
+Exercise 3.
+
+Zadatak je bio da se implementira funkcija mem_init_mp koja služi za mapiranje CPU
+stackova za svaki CPU odnosno jezgro. Za implementiranje koristimo funkciju 
+boot_map_region koja koristi kernelov page directory. Drugi argument je početna 
+virtuelna adresa i-tog kernel stacka, računata tako da stack počinje od kraja
+(KSTACKTOP) i ide unazad, sa razmakom (KSTKGAP) između stackova susjednih CPU. 
+Veličina koja se mapira je KSTKSIZE, a fizička adresa je od i-tog jezgra iz niza 
+percpu_kstacks. Permisija je PTE_W, jer moramo moći pisati na stack.
+percpu_kstacks ćemo koristiti i u sledećim exercise-ima, i on predstavlja niz od
+NCPU elemenata i predstavlja niz ovih kernel stackova.
+
+static void
+mem_init_mp(void)
+{
+  int i;
+  for (i = 0; i < NCPU; i++) {
+  boot_map_region(kern_pgdir,KSTACKTOP-i*(KSTKSIZE+KSTKGAP)- KSTKSIZE, KSTKSIZE, PADDR(percpu_kstacks[i]), PTE_W);
+
+  }
+
+}
+
+Funkcija za svaki PCU mapira njegov kernel stack u virtuelni prostor koristeći fizičke
+adrese iz percpu_kstacks, koristeći male razmake (KSTKGAP) između stackova radi zaštite
+od overflow-a.
+
+Exercise 4.
+
+U exerciseu 4. funkcija trap_init_percpu je izmijenjenja tako da ispravno inicijalizira
+TSS za svako jezgro (CPU), a ne samo za BSP. Globalna varijabla ts je zamijenjena sa 
+per-CPU TSS strukturama kojima se pristupa preko pointera thiscpu. Kernel stack 
+pointer (ts_esp0) i TSS deskriptor u GDT-u se sada postavljaju na osnovu ID-a trenutnog
+jezgra, čime se osigurava ispravno prebacivanje stacka pri prekidia za sva jezgra u
+kernelu.
+Ovako te izmjene izgledaju u kodu:
+
+void
+trap_init_percpu(void)
+{
+	
+  int id = thiscpu->cpu_id;
+	// Setup a TSS so that we get the right stack
+	// when we trap to the kernel.
+	thiscpu->cpu_ts.ts_esp0 = (uint32_t)percpu_kstacks[id]+KSTKSIZE;
+	thiscpu->cpu_ts.ts_ss0 = GD_KD;
+	thiscpu->cpu_ts.ts_iomb = sizeof(struct Taskstate);
+
+	// Initialize the TSS slot of the gdt.
+	gdt[(GD_TSS0 >> 3)+id] = SEG16(STS_T32A, (uint32_t) (&thiscpu->cpu_ts),
+					sizeof(struct Taskstate) - 1, 0);
+	gdt[(GD_TSS0 >> 3)+id].sd_s = 0;
+
+	// Load the TSS selector (like other segment selectors, the
+	// bottom three bits are special; we leave them 0)
+	ltr(GD_TSS0 + (id<<3));
+
+	// Load the IDT
+	lidt(&idt_pd);
+}
+
+Exercise 5.
+Zadatak u ovom exerciseu je bio da se zaključa i otključa brava na određenim mjestima
+Konkretno u:
+- u funkciji i386_init() zaključavamo bravu prije nego što Bootstrap jezgro probudi 
+ostala jezgra.
+- u funkciji mp_main() zaključavamo bravu nakon inicijalizacije AP-a, prije ulaska 
+u sched_yield()
+- u funkciji trap() zaključavamo bravu kada dođe to trap-a iz user moda, unutar onog
+if-a koji provjerava da li su zadnja 2 bita cs registra za user mode.
+- u env_run() otpuštamo bravu neposredno prije prelaska u user mode i to prije 
+lcr3 funkcije koja učitava adresni prostor procesa, jer zaključavanje i otključavanje
+kernela trebamo raditi samo u kernel kodu.
+
+
+Exercise 5.
+
+Question 2.
+It seems that using the big kernel lock guarantees that only one CPU can run the 
+kernel code at a time. Why do we still need separate kernel stacks for each CPU? 
+Describe a scenario in which using a shared kernel stack will go wrong, even 
+with the protection of the big kernel lock.
+
+Da tačno je da kernel lock garantira da samo jedan CPU može izvršavati kritičnu
+sekciju u jedinici vremena. Razlog iz kojeg trebamo separatne kernel stackove za svaki
+CPU je zbog onih trap frameova na tom stacku. Dakle kernel lock nema baš veze sa 
+ovim formiranjem trap frame-a na stacku. Imali smo to i kad smo radili samo sa 
+BSP-om. Kada bi bio slučaj da svi koriste isti kernel stack, u slučaju izvršenja
+recimo 2 procesa. Prvi proces izazove i onda prvi CPU pusha dio trap frame-a na stack 
+i broj prekida. Recimo da nakon toga drugi proces izazove neki prekid i on pusha
+dio svog trapframea na stack. Onda prvi proces uđe u alltraps pusha i preostali dio
+registara na stack-frame i uđe u funkciju trap i zaključa kernel. Isto to uradi i 
+drugi proces nekad u ovom periodu ili poslije pushanja procesa 1, sa time što će morati
+da čeka da se kernel otključa. U ovom trenutku vidimo da je potencijalno moguće
+da se registri nasumičnim pushanjem više jezgri izmješaju registri jednog i drugog
+procesa, što će dovesti da env_pop_tf asemblerska funkcija pop-a nevalidne registre
+odnosno dio registara da pop-a, a dio da ostavi, što može dovesti do bugova i crashova.
+Na ovaj način ne možemo validno servisirati prekid.
+
+Question 3.
+In your implementation of env_run() you should have called lcr3(). Before and after the
+call to lcr3(), your code makes references (at least it should) to the variable e, the
+argument to env_run. Upon loading the %cr3 register, the addressing context used by the
+MMU is instantly changed. But a virtual address (namely e) has meaning relative to a 
+given address context--the address context specifies the physical address to which the 
+virtual address maps. Why can the pointer e be dereferenced both before and after the 
+addressing switch?
+
+e je pokazivač na strukturu Env koja živi u kernelu prostoru. Kernel je uvijek mapiran
+u isti virtuelni prostor na svim procesorima. To znamo iz funkcije env_setup_vm().
+Ovo je neovisno od cr3 registra tj. page directory-a koji se koristi za određeni 
+proces. Sa tim u vezi i sa obzirom da se struct Env nalaze u kernel adresnom prostoru,
+pozivom lcr3 funkcije ne mijenjamo adresni prostor korisničkog procesa, kernel
+adrese ostaju iste, a to su upravo one adrese koje nam trebaju ovdje u env_run. 
+Zato pointer e, može biti dereferenciran prije i poslije mijenjanja adresnog prostora,
+je u suštini pokazuje na istu fizičku memoriju svaki put.
+
+Question 4.
+Whenever the kernel switches from one environment to another, it must ensure the old 
+environment's registers are saved so they can be restored properly later. Why? Where 
+does this happen?
+
+Registri predstavljaju tok izvršenja nekog programa. Dakle unutar registara se 
+bilježi stanje, podaci i segment trenutnog programa. U procesu switchanja procesa 
+sa jednog na drugi, kada se proces kasnije vrati na taj prvi CPU, ne bi se moglo
+nastaviti tamo gdje se stalo. Ove stvari se dešavaju konstantno stotine puta u par
+sekundi prekidom tajmera, tako da da ovaj koncept sačuvanja stanja kroz registre
+nije implementiran, ovaj kernel bi imao velike probleme. Sačuvanje registara
+omogućava izvršavanje sa prekidima tj. multitasking procesora bez gubljenja podataka.
+Sačuvanje registara se dešava u strukturi Trapframe. Detalje tog procesa smo naširoko 
+objašnjavali u lab3.
+
+Exercise 6.
+
+Implementirao sam round-robin scheduling na sledeći način:
+
+void
+sched_yield(void)
+{
+  //	struct Env *idle;
+
+	// LAB 4: Your code here.
+  struct Env *curr = curenv;
+  int next;
+  if (curenv == NULL)
+    next = 0;
+  else 
+    next = ENVX(curenv->env_id)+1;
+
+  for (int i=next; i<NENV; i++) {
+    if (envs[i].env_status == ENV_RUNNABLE)
+      env_run(&envs[i]);
+  }
+  for (int i = 0; i < next; i++) {
+    if (envs[i].env_status == ENV_RUNNABLE)
+      env_run(&envs[i]);
+  }
+
+  if (curenv && curenv->env_status == ENV_RUNNING)
+    env_run(curenv);
+
+
+	// sched_halt never returns
+	sched_halt();
+}
+
+Ova funkcija implementira round-robin scheduler. Počinje se pretraga od environmenta
+iza trenutno izvršavanog procesa i kružno prolazi kroz niz envs tražeći prvi sa
+statusom ENV_RUNNABLE. Kada ga pronađe, prebacuje CPU na taj proces pozivom env_run().
+Ako nijedan proces nije runnable, ali je trenutni proces još uvijek ENV_RUNNING, 
+nastavlja se sa njegovim izvršavanjem. U suprotnom, CPU se zaustavlja pozivom
+sched_halt funkcije.
+
+Exercise 7.
+
+Sa obzirom da sam ove sistemske pozive pisao po komentarim, samim time nisam imao
+ništa previše da razmišljam, dovoljno je reći da smo u exerciseu 7. implementirali
+par sistemskih poziva:
+-sys_exofork - Kreira novi environment kao kopiju trenutnog procesa, ali ga postavlja
+u stanje ENV_NOT_RUNNABLE. Dijete dobija povratnu vrijednost 0 u registru %eax, dok
+roditelj dobija env_id novog procesa.
+-sys_env_set_status - Provjerava da li je zadani status validan i ako je to slučaj
+mijenja stanje određenog environmenta u ENV_RUNNABLE ili ENV_NOT_RUNNABLE.
+-sys_page_alloc - Alocira novu fizičku stranicu i mapira je u virtuelni adresni 
+prostor na neku virtuelnu adresu sa odgovarajućim permisijama.
+-sys_page_map - mapira postojeću stranicu iz adresnog prostora jednog procesa u 
+adresni prostor drugog, uz neke provjere validnosti adresa i permisija.
+-sys_page_unmap - uklanja mapiranje stranice sa zadane virtuelne adrese u virtuelnom
+adresnom prostoru procesa.
+
+Sve ovo treba dodati u syscall funkcija odnosno trebalo je dodati nove case blokove
+koji omogućavaju pravilno prosljeđivanje sistemskih poziva.
