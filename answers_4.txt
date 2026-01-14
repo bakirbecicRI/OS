@@ -378,5 +378,43 @@ adresni prostor drugog, uz neke provjere validnosti adresa i permisija.
 -sys_page_unmap - uklanja mapiranje stranice sa zadane virtuelne adrese u virtuelnom
 adresnom prostoru procesa.
 
-Sve ovo treba dodati u syscall funkcija odnosno trebalo je dodati nove case blokove
+Sve ovo treba dodati u syscall funkciju odnosno trebalo je dodati nove case blokove
 koji omogućavaju pravilno prosljeđivanje sistemskih poziva.
+
+PART B
+
+sa obzirom na nedostatak vremena u posljednjem periodu detaljan report sam izostavio 
+ovog puta, te ću sada odgovorit na mini question exercisea 9.
+
+Pitanje iz exercisea 9. je:
+What happens if the user environment runs out of space on the exception stack ?
+
+Ako proces popuni cijeli user exception stack i desi se novi page fault, kernel 
+pokušava napraviti novi user trap frame na vrhu exception stack-a. Ako je vrh 
+stack-a već iskorišten i nema dovoljno prostora u alociranom page-u za exception
+stack, tada adresa na kojoj kernel želi smjestiti trap frame više nije validna 
+u korisničkom adresnom prostoru.
+Prije nego što kernel zapravo napiše, pozove se funkcija user_mem_assert, koja 
+provjerava da li korisnički proces ima dozvolu za pristup memoriji na kojoj će se
+trap frame smjestiti i da li su sve stranice mapirane. Funkcija user_mem_assert 
+koristi user_mem_check koja provjerava znamo već koje stvari, dakle da li:
+- adrese koje se provjeravaju prelaze granicu korisničkog prostora (ULIM)
+- adrese imaju sve potrebne permisije (PTE_U | PTE_W)
+- adrese imaju mapirane stranice (PTE_P bit je postavljen i pte nije NULL)
+
+Ako bilo koji od uslova nije zadovoljen, što i jeste slučaj kada je stack pun i 
+adresa za novi trap frame izlazi iz alociranog page-a, onda se uništava proces sa
+env_destroy.
+
+Dakle, kada se user exception stack popuni, kernel više ne može smjestiti novi 
+user trap frame. Sljedeći page fault u user modu koji bi zahtjevao smještaj 
+trap frame-a automatski vodi do uništenja okruženja, jer to automatski znači 
+pokušaj pristupa memoriji van dozvoljenog korisničkog prostora.
+
+Znači ukratko, korisnički proces nema beskonačan exception stack, kada se stack 
+ispuni svaki novi page fault u user modu uzrokuje uništenje okruženja. Time 
+spriječavamo oštećenje kernela i nevalidna i mapiranja koja mogu naštetiti JOS-u.
+
+Ujedno ovim odgovorom opisujem ponašanje funkcije page_fault_handler u JOS-u,
+konkretno njen dio koji se bavi page fault-om u user modu i korištenjem user 
+exception stacka.
