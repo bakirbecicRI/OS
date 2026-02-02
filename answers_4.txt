@@ -418,3 +418,217 @@ spriječavamo oštećenje kernela i nevalidna i mapiranja koja mogu naštetiti J
 Ujedno ovim odgovorom opisujem ponašanje funkcije page_fault_handler u JOS-u,
 konkretno njen dio koji se bavi page fault-om u user modu i korištenjem user 
 exception stacka.
+
+U Part B cilj je da se fork uradi efikasno tako što se stranice ne kopiraju odmah. 
+Umjesto toga i parent i child dijele iste fizičke stranice, a čim neko od njih pokuša 
+pisati u stranicu, tada se radi kopija. Ovo je Copy-on-Write (COW) ideja.
+
+Da bi to radilo, moramo riješiti 3 stvari:
+Kernel mora moći pozvati user-level page fault handler (env_pgfault_upcall)
+Mora postojati user exception stack (UXSTACK) gdje kernel smješta UTrapframe
+User-level handler mora znati “vratiti se” na staru lokaciju kao da se page fault nije desio, i nastaviti izvršenje.
+
+Exercise 8 — sys_env_set_pgfault_upcall
+U ovom dijelu je dodan sistemski poziv koji omogućava user programu da kaže kernelu:
+“Ako mi se desi page fault, ne ubijaj me odmah, nego me vrati u user mode na ovu funkciju.”
+To je implementirano kroz polje env_pgfault_upcall u struct Env.
+Znači, kad god kernel vidi page fault u user modu, i ako je env_pgfault_upcall != NULL, onda priprema UTrapframe na UXSTACK i vraća kontrolu user handleru.
+Ovaj dio je poprilično direktan: radi se provjera validnosti envid i permisija sa envid2env, a zatim se setuje pointer.
+
+Exercise 9 — page_fault_handler (user mode dio)
+Ovdje je “srce” user-level page fault mehanizma. Kada se desi page fault:
+rcr2() nam da adresu koja je uzrokovala fault (fault_va)
+provjerimo da li se fault desio u kernel modu ili user modu
+ako je u user modu i postoji env_pgfault_upcall, onda:
+formiramo struct UTrapframe na user exception stacku
+podesimo tf->tf_eip da pokazuje na env_pgfault_upcall
+podesimo tf->tf_esp da pokazuje na taj novi UTrapframe
+pozovemo env_run(curenv) da se proces vrati u user handler
+
+Bitan detalj: ako se fault desi dok smo već na exception stacku, treba ostaviti “prazan word” (4B) 
+između prethodnog stack sadržaja i novog UTrapframe. To je ono tf->tf_esp - 4 prije pravljenja utf. 
+Time se izbjegava da se handler “pregazi” (jer handler može koristiti stack i očekuje normalno poravnanje/razmak).
+
+Mini pitanje (Exercise 9)
+What happens if the user environment runs out of space on the exception stack?
+Ako proces popuni cijeli user exception stack i desi se novi page fault, kernel pokušava 
+napraviti novi UTrapframe na vrhu exception stack-a. Ako više nema prostora (izlazi ispod 
+alocirane stranice UXSTACK-a), adresa gdje kernel pokušava pisati više nije validna u tom env-u.
+
+Prije nego kernel zapravo upiše UTrapframe, poziva user_mem_assert(curenv, utf, sizeof(*utf), PTE_U|PTE_W). 
+To provjerava da su stranice mapirane i da imaju permisije. Kad UXSTACK overflow-a, ova provjera pada i kernel radi env_destroy(curenv).
+Dakle: env se uništava čim pokuša napraviti još jedan UTrapframe a UXSTACK je pun. Time se štiti kernel i izbjegava pisanje u nevalidnu memoriju.
+
+Exercise 10 — User-mode Page Fault Entrypoint (_pgfault_upcall)
+Ovdje je fora: kernel je prebacio env u user mode, ali na env_pgfault_upcall funkciju, i %esp mu pokazuje na UTrapframe na UXSTACK-u.
+Međutim, _pgfault_upcall mora uraditi dvije stvari:
+Pozvati C handler _pgfault_handler(utf) (koji si postavio u set_pgfault_handler)
+Nakon što handler završi (tj. nakon što je problem riješen), vratiti CPU stanje tako da env nastavi tačno tamo gdje je page fault nastao, kao da se ništa nije desilo.
+Zato _pgfault_upcall mora:
+vratiti general purpose registre (popal)
+vratiti eflags (popfl)
+vratiti originalni user esp (onaj iz vremena fault-a)
+vratiti eip (da se instrukcija koja je faultovala ponovo izvrši)
+Ključni trik je ovaj dio sa “spuštanjem” trap-time esp i ubacivanjem trap-time eip na user stack prije ret. Jer ret čita eip sa stacka, a mi moramo osigurati da se ret izvrši na pravom (trap-time) user stacku, ne na UXSTACK-u.
+
+Tvoj kod u _pgfault_upcall je dobar i radi ispravno logiku koju lab traži:
+48(%esp) je trap-time esp iz UTrapframe layouta (jer ispod fault_va i err code dolaze PushRegs itd.)
+prvo napraviš 4 bajta mjesta na originalnom user stacku (smanjiš esp za 4)
+u to mjesto upišeš trap-time eip
+onda restore regs + eflags, prebaciš %esp na user stack, i ret
+Ovim dobiješ “clean return” u user kod.
+
+Exercise 11 — set_pgfault_handler
+Ovo je user-space helper koji radi 2 bitne stvari prvi put kad se pozove:
+alocira i mapira jednu stranicu za user exception stack na UXSTACKTOP - PGSIZE
+registruje kernelu da je env_pgfault_upcall = _pgfault_upcall
+Onda čuva pointer na stvarni C handler u _pgfault_handler, kojeg _pgfault_upcall kasnije poziva.
+Ovdje je suština: kernel uvijek zove _pgfault_upcall, a _pgfault_upcall zove tvoj handler.
+
+Exercise 12 — Implementing Copy-on-Write fork
+Ovo je “final boss” Part B. Cilj forka:
+Napravi child env (sys_exofork)
+Mapiraj sve user stranice iz parenta u child
+Ali: ako je stranica writable, onda je mapiraj kao COW u oba env-a (i parent i child)
+Child dobije novi UXSTACK page (ne dijeli exception stack)
+
+Postavi child upcall i status RUNNABLE
+duppage
+duppage(child, pn) radi:
+pogleda parent PTE za tu stranicu
+ako je writable ili već COW:
+mapira u child kao PTE_COW | PTE_U (i bez PTE_W)
+remapira u parent kao COW (da parent više ne može direktno pisati bez fault-a)
+ako nije writable:
+
+mapira normalno read-only u child
+Time se osigurava da se kopija pravi samo kad neko pokuša pisati.
+pgfault (COW handler)
+Kad dođe page fault:
+provjeri da je fault nastao zbog pisanja (FEC_WR) i da je stranica COW
+alocira novu stranicu na PFTEMP
+kopira sadržaj stare stranice u novu (memcpy)
+mapira novu stranicu na staru adresu sa PTE_U|PTE_W
+unmap-a PFTEMP
+Ovo efektivno “odveže” parent/child i od tog momenta svako ima svoju kopiju.
+
+fork
+
+U fork() radiš:
+set_pgfault_handler(pgfault)
+envid = sys_exofork()
+ako si child: samo popravi thisenv i vrati 0
+ako si parent:
+prođi kroz sve user stranice do USTACKTOP i za svaku mapiranu zovi duppage
+alociraj novu stranicu za child UXSTACK
+setuj upcall
+
+stavi child RUNNABLE
+
+To je to: COW fork radi.
+
+PART C — Preemptive Multitasking & IPC (dopunjeno i završeno)
+
+Part C uvodi 2 stvari:
+
+Preemption — kernel ne zavisi od toga da user program “dobrovoljno” yield-a. Timer interrupt prisilno prekida env i scheduler bira drugi.
+IPC — env-ovi mogu slati poruke (i opcionalno mapirati stranicu) drugim env-ovima.
+
+Exercise 13 — IRQ handlers + enabling interrupts in user env
+Prvi korak je dodati IRQ handlere u trapentry.S. Poenta je da IRQ-ovi nemaju error code, pa se koriste TRAPHANDLER_NOEC.
+Zatim u trap_init mapiraš IDT entry-je za IRQ 0..15 na vektore IRQ_OFFSET + n.
+Bitna stvar: da bi preemption radio, env mora imati interrupt flag omogućen, tj. FL_IF mora biti 1 u tf_eflags. Zato se u env_alloc radi:
+e->env_tf.tf_eflags |= FL_IF;
+
+
+I još u sched_halt() treba sti prije hlt, da CPU može primati prekide kad je idle.
+Ovim smo omogućili da timer interrupt može prekinuti env.
+
+Exercise 14 — Timer interrupt => sched_yield()
+
+Kad dođe interrupt od timera, tf->tf_trapno == IRQ_OFFSET + IRQ_TIMER.
+
+U trap_dispatch dodaš slučaj:
+
+lapic_eoi() (mora se signalizirati LAPIC-u da je interrupt handled)
+sched_yield() (prelazak na scheduler)
+Poenta: sada user program može biti prekinut iako nikad ne pozove sys_yield. To je preemptive multitasking.
+
+Exercise 15 — IPC (send/recv + page mapping)
+
+IPC u JOS-u je dizajniran ovako:
+Receiver pozove sys_ipc_recv(dstva):
+kaže “spreman sam primiti”
+blokira se (ENV_NOT_RUNNABLE)
+opcionalno kaže gdje želi mapirati stranicu (dstva)
+Sender pozove sys_ipc_try_send(to, val, srcva, perm):
+ako receiver ne čeka: vraća -E_IPC_NOT_RECV
+
+ako receiver čeka:
+
+upiše val, from, perm
+ako receiver želi stranicu i sender šalje validnu:
+mapira senderovu stranicu u receiver na dstva sa perm
+probudi receiver (ENV_RUNNABLE)
+
+sys_ipc_recv
+
+Provjerava se dstva:
+
+ako je ispod UTOP, mora biti page-aligned
+
+ako je iznad UTOP, to znači “ne želim stranicu, samo value”
+
+Zatim:
+
+curenv->env_ipc_recving = 1
+
+curenv->env_ipc_dstva = dstva
+
+curenv->env_status = ENV_NOT_RUNNABLE
+
+yield (u nekim implementacijama se sched odmah pozove ili se samo promijeni status i return-a, pa trap izlaz uradi ostalo)
+
+sys_ipc_try_send
+
+Ovdje ima više check-ova:
+
+envid2env(to, &e, 0)
+
+if (!e->env_ipc_recving) return -E_IPC_NOT_RECV;
+
+inicijalno e->env_ipc_perm = 0 (ako se ne šalje stranica)
+
+Ako se šalje stranica:
+
+sender srcva < UTOP i receiver dstva < UTOP
+
+srcva mora biti aligned
+
+perm mora biti validan (perm & ~PTE_SYSCALL ne smije)
+
+mora postojati mapirana stranica u senderu (page_lookup)
+
+ne smiješ dati write perm ako je senderova stranica read-only (perm & PTE_W a PTE nema PTE_W)
+
+onda page_insert(receiver_pgdir, page, dstva, perm)
+
+setuje env_ipc_perm = perm
+
+Na kraju, bez obzira da li se šalje stranica ili ne:
+
+env_ipc_recving = 0
+
+env_ipc_from = curenv->env_id
+
+env_ipc_value = value
+
+env_status = ENV_RUNNABLE
+
+User-level wrappers ipc_send i ipc_recv
+
+ipc_send vrti sys_ipc_try_send dok receiver ne bude spreman (dok ne prestane vraćati -E_IPC_NOT_RECV)
+
+ipc_recv pozove sys_ipc_recv, a onda nakon buđenja čita thisenv->env_ipc_* polja i vraća value
+
+To daje useru jednostavan API bez ručnog petljanja.
